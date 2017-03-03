@@ -1,0 +1,32 @@
+cuts:
+    0:
+        cnodes:
+            - 1
+        snodes:
+    1:
+        cnodes:
+            - 3
+        snodes:
+
+nodes:
+    1:
+        type: source
+        cut: 0
+        to:
+            - 2
+        operator: 'lambda'
+        to_cut_no:
+            - 1
+    2:
+        type: normal
+        from:
+            - 1
+        to:
+            - 3
+    3:
+        type: sink
+        cut: 1
+        from:
+            - 2
+        from_cut_no:
+            - 0
