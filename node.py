@@ -43,8 +43,12 @@ class PendingWindow(object):
         if all(self.version_acks.values()) and set(map(lambda q: q[-1], self.version_acks.values())) == 1:
             self.truncate(version)
 
-    def rewind(self, ):
-        pass
+    def rewind(self, version):
+        for f in os.listdir(self.directory):
+            if f == 'current' or int(f) > version:
+                os.remove(os.path.join(self.directory, f))
+
+        self.current_file = open(os.path.join(self.directory, 'current'), 'w')
 
 
 class Node(object):

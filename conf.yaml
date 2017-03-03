@@ -18,11 +18,12 @@ nodes:
         to_cut_no:
             - 1
     2:
-        type: normal
+        type: filter
         from:
             - 1
         to:
             - 3
+        operator: 'lambda t: t.tuple_id % 2'
     3:
         type: sink
         cut: 1

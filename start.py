@@ -9,12 +9,14 @@ import cPickle as pickle
 from subprocess import Popen
 from optparse import OptionParser
 
+
 class AppStarter(object):
     def __init__(self, conf_file):
         with open(conf_file) as f:
             self.conf = yaml.load(f)
 
         self.pickle_dir = os.path.join(CONSTANTS.ROOT_DIR, 'pickled_nodes')
+        self.backup_dir = os.path.join(CONSTANTS.ROOT_DIR, 'backup_dir')
 
         self.nodes = {}
 
@@ -59,12 +61,21 @@ class AppStarter(object):
             if ck == 0:
                 continue
 
+            # the segment-ending nodes
             connecting_nodes = cv['cnodes']
+            # the interior nodes
             segment_nodes = cv['snodes']
 
-            # the version that cut truncated to
-            downstream_cut_versions =
-            truncate_version_to = min()
+            # the version that cut truncated to = min(node versions of the seg-end cut)
+            # TODO: no valid backup version
+            safe_version = min(
+                max(filter(lambda i: i.isdigits(), os.listdir(os.path.join(self.backup_dir, n, 'node'))))
+                for n in connecting_nodes)
+            for n in segment_nodes:
+                self.nodes[n].latest_checked_version = safe_version
+
+            for n in connecting_nodes:
+                n.pending_window.rewind(safe_version)
 
     def start_nodes(self):
         for n in reversed(self.conf):
@@ -78,8 +89,6 @@ class AppStarter(object):
     def restart_app(self):
         self.recover_nodes()
         self.start_nodes()
-
-
 
 if __name__ == '__main__':
     parser = OptionParser()
