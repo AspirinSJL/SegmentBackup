@@ -3,6 +3,7 @@ from node import *
 from tuple import *
 
 import os
+import shutil
 import time
 import yaml
 import cPickle as pickle
@@ -10,26 +11,35 @@ from subprocess import Popen
 from optparse import OptionParser
 
 
+
 class AppStarter(object):
-    def __init__(self, conf_file):
+    def __init__(self, conf_file, start_mode):
         with open(conf_file) as f:
             self.conf = yaml.load(f)
 
         self.pickle_dir = os.path.join(CONSTANTS.ROOT_DIR, 'pickled_nodes')
         self.backup_dir = os.path.join(CONSTANTS.ROOT_DIR, 'backup_dir')
 
-        self.nodes = {}
+        if start_mode == 'new':
+            # create/overwrite these directories
+            for d in (self.pickle_dir, self.backup_dir):
+                if os.path.exists(d):
+                    shutil.rmtree(d)
+                os.makedirs(d)
+
+        # self.nodes = {}
 
     def init_nodes(self):
-        # turn the conf_file into node instances
+        ''' Turn the conf_file into node instances, and pickle them for reuse
+        '''
 
-        for n in self.conf['nodes']:
-            if n['type'] == 'normal':
-                node = Node(n, n['operator'], n['from'], n['to'])
+        for n_id, n_info in self.conf['nodes'].iteritems():
+            if not n_info['is_connecting']:
+                node = Node(n_id, n_info['type'], n_info['operator'], n_info['from'], n_info['to'])
             else:
-                node = ConnectingNode(n, n['operator'], n['from'], n['to'],
-                                      self.conf['cuts'][n['from_cut_no']] if 'from_cut_no' in n else None,
-                                      self.conf['cuts'][n['to_cut_no']] if 'to_cut_no' in n else None)
+                node = ConnectingNode(n_id, n_info['type'], n_info.get('operator', None), n_info['from'], n_info['to'],
+                                      self.conf['cuts'][n_info['from_cut_no']] if 'from_cut_no' in n else None,
+                                      self.conf['cuts'][n_info['to_cut_no']] if 'to_cut_no' in n else None)
 
                 if n['type'] == 'source':
                     def gen_tuple(delay=3, barrier_interval=50):
@@ -50,7 +60,7 @@ class AppStarter(object):
 
                     node.operator = collect
 
-            self.nodes[n] = node
+            # self.nodes[n] = node
             pickle.dump(node, open(os.path.join(self.pickle_dir, '%d.pkl' % n), 'wb'))
 
     def recover_nodes(self, back):
@@ -86,7 +96,7 @@ class AppStarter(object):
         self.init_nodes()
         self.start_nodes()
 
-    def restart_app(self):
+    def restart_app(self)
         self.recover_nodes()
         self.start_nodes()
 
