@@ -5,6 +5,7 @@ import logging
 import os
 import xmlrpclib
 import thread
+import Queue
 import socket
 import json
 from collections import deque
@@ -75,10 +76,15 @@ class Node(object):
         
         # construct an operator according to node type and rule
         # the operator usually takes in a Tuple and return a list of Tuples
+        # TODO: make operator more flexible
         if self.type == 'filter':
             self.operator = lambda t: filter(self.rule, [t])
         elif self.type == 'transform':
             self.operator = lambda t: map(self.rule, [t])
+        elif self.type == 'reduce':
+            pass
+        elif self.type == 'join':
+            pass
         elif self.type in ('source', 'sink'):
             pass
         else:
@@ -101,49 +107,73 @@ class Node(object):
         for d in (self.backup_dir, self.node_backup_dir):
             os.makedirs(d)
 
-        # TODO: lock?
+        # if a queue is blocked, it only buffer the incoming tuples but not handle them
+        # i.e., blocked refers to the HEAD of the queue
+        class InputQueue(object):
+            def __init__(self):
+                self.is_blocked = False
+                self.queue = Queue.Queue()
+
         self.input_queues = dict()
         for n in upstream_nodes:
-            self.input_queues[n] = {'is_blocked': False, 'queue': deque()}
+            self.input_queues[n] = InputQueue()
 
-        # self.rpc_server = SimpleXMLRPCServer(('localhost', self.port))
+    def handle_tuple(self, tuple_):
+        ''' General method to handle any received tuple, including sending out if applicable
+        '''
 
-    def handle_tuple(self, node_id, tuple_):
+        def handle_normal_tuple(tuple_):
+            output = self.operator(tuple_)
+            for n in self.downstream_nodes:
+                try:
+                    sock = socket.create_connection(('localhost', CONSTANTS.PORT_BASE + n))
+                    sock.sendall(json.dumps(output))
+                except socket.error, e:
+                    LOGGER.error(e)
+                finally:
+                    sock.close()
+
+        def handle_barrier(barrier):
+            # if this is the last barrier needed for a version, checkpoint a version
+            if all(self.input_queues[n].is_blocked for n in self.upstream_nodes if n != barrier.sent_from):
+                # checkpoint (touch a file)
+                open(os.path.join(self.node_backup_dir, barrier.tuple_id)).close()
+
+                self.latest_checked_version = barrier.tuple_id
+
+                # open all the channels after each checkpoint
+                for n in self.upstream_nodes:
+                    if n != barrier.sent_from:
+                        self.input_queues[n].is_blocked = False
+            else:
+                # stop handling the tuples from this sender to wait for others
+                self.input_queues[barrier.sent_from].is_blocked = True
+
         if isinstance(tuple_, BarrierTuple):
-            self.handle_barrier(node_id, tuple_)
+            handle_barrier(tuple_)
         else:
-            output = self.rule(tuple_)
-            for t in output:
-                for n in self.downstream_nodes:
-                    try:
-                        sock = socket.create_connection(('localhost', CONSTANTS.PORT_BASE + n))
-                        sock.sendall(output)
-                    except socket.error, e:
-                        LOGGER.error(e)
-                    finally:
-                        sock.close()
+            handle_normal_tuple(tuple_)
 
         self.cur_node_state = tuple_.tuple_id
-        
-    def handle_barrier(self, node_id, barrier):
-        # backup for node
-        # if this is the last barrier needed for a version, checkpoint a version
-        if all(self.input_queues[n]['is_blocked'] for n in self.upstream_nodes if n != node_id):
-            # checkpoint
-            open(os.path.join(self.node_backup_dir, barrier.version)).close()
-            self.latest_checked_version = barrier.version
 
-            for n in self.upstream_nodes:
-                if n != node_id:
-                    self.input_queues[n]['is_blocked'] = False
-        else:
-            self.input_queues[node_id]['is_blocked'] = True
+    def consume_buffered_tuples(self):
+        # round robin
+        while True:
+            for q in self.input_queues.values():
+                if q.queue.empty() or q.is_blocked:
+                    continue
+
+                self.handle_tuple(q.queue.get())
+                q.queue.task_done()
 
     def serve_inbound_connection(self):
         while True:
             conn, client = self.sock.accept()
             data = json.loads(conn.recv(CONSTANTS.TCP_BUFFER_SIZE))
-            self.handle_tuple(data)
+            assert data and isinstance(data, list) and isinstance(data[0], Tuple)
+            # put the tuple list into according buffer for later handling
+            for t in data:
+                self.input_queues[t.sent_from].queue.put(t, block=True)
 
 
 class ConnectingNode(Node):
@@ -172,19 +202,13 @@ class ConnectingNode(Node):
             # RPC
             n.manage_version_ack(self.node_id, version)
 
-    def manage_version_ack(self, node_id, version):
-        self.pending_window.manage_version_ack(node_id, version)
+    def handle_tuple(self, tuple_):
+        super(ConnectingNode, self).handle_tuple(tuple_)
 
-    def handle_tuple(self, node_id, tuple_):
-        super(ConnectingNode, self).handle_tuple(node_id, tuple_)
+        if isinstance(tuple_, BarrierTuple):
+            self.pending_window.manage_version_ack()
 
-
-    def handle_barrier(self, node_id, barrier):
-        # backup for node
-        super(ConnectingNode, self).handle_barrier(node_id, barrier)
-
-        # ack version for pending window
-        self.ack_version(barrier.version)
+            # TODO: state change should be here?
 
     def serve_inbound_connection(self):
         while True:
