@@ -11,8 +11,9 @@ from subprocess import Popen
 from optparse import OptionParser
 
 
-
 class AppStarter(object):
+    """ Instantiated separately for start and restart
+    """
     def __init__(self, conf_file, start_mode):
         with open(conf_file) as f:
             self.conf = yaml.load(f)
