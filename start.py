@@ -12,7 +12,7 @@ from optparse import OptionParser
 
 
 class AppStarter(object):
-    """ Instantiated separately for start and restart
+    """Instantiated separately for start and restart
     """
     def __init__(self, conf_file, start_mode):
         with open(conf_file) as f:
@@ -31,27 +31,19 @@ class AppStarter(object):
         # self.nodes = {}
 
     def init_nodes(self):
-        ''' Turn the conf_file into node instances, and pickle them for reuse
-        '''
+        """Turn the conf_file into node instances, and pickle them for reuse
+        """
 
         for n_id, n_info in self.conf['nodes'].iteritems():
             if not n_info['is_connecting']:
-                node = Node(n_id, n_info['type'], n_info['operator'], n_info['from'], n_info['to'])
+                node = Node(n_id, n_info['type'], n_info['rule'], n_info['from'], n_info['to'])
             else:
-                node = ConnectingNode(n_id, n_info['type'], n_info.get('operator', None), n_info['from'], n_info['to'],
-                                      self.conf['cuts'][n_info['from_cut_no']] if 'from_cut_no' in n else None,
-                                      self.conf['cuts'][n_info['to_cut_no']] if 'to_cut_no' in n else None)
+                node = ConnectingNode(n_id, n_info['type'], n_info.get('rule', None), n_info['from'], n_info['to'],
+                            self.conf['cuts'][n_info['from_cut_no']]['cnodes'] if 'from_cut_no' in n_info else None,
+                            self.conf['cuts'][n_info['to_cut_no']]['cnodes'] if 'to_cut_no' in n_info else None)
 
-                if n['type'] == 'source':
-                    def gen_tuple(delay=3, barrier_interval=50):
-                        i = 1
-                        while True:
-                            if i % barrier_interval:
-                                yield BarrierTuple(i)
-                            else:
-                                yield Tuple(i)
-                            time.sleep(delay)
-                            i += 1
+                # special cases for source and sink nodes
+                if n_info['type'] == 'source':
 
                     node.operator = gen_tuple
                 elif n['type'] == 'sink':
@@ -103,7 +95,7 @@ class AppStarter(object):
 
 if __name__ == '__main__':
     parser = OptionParser()
-    parser.add_option('-m', '--mode', dest='start_mode')
+    parser.add_option('-m', '--mode', dest='start_mode', help='new or restart')
     parser.add_option('-f', '--file', dest='conf_file', default=os.path.join(CONSTANTS.ROOT_DIR, 'conf.yaml'))
 
     (options, args) = parser.parse_args()

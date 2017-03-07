@@ -3,7 +3,7 @@ from tuple import *
 
 import logging
 import os
-import xmlrpclib
+import time
 import thread
 import Queue
 import socket
@@ -52,7 +52,7 @@ class PendingWindow(object):
 
     def extend(self, tuples):
         # TODO: can be improved
-        for t in tuple:
+        for t in tuples:
             self.append(t)
 
     def truncate(self, version):
@@ -84,10 +84,104 @@ class PendingWindow(object):
 
 
 class Node(object):
-    """Normal Node as if SegmentBackup is not considered.
+    """Basic node with basic utility
     """
-    def __init__(self, node_id, type, rule, upstream_nodes, downstream_nodes):
+
+    def __init__(self, node_id, computing_state=0):
         self.node_id = node_id
+        # update after handling (creating if Spout) each app tuple
+        self.computing_state = computing_state
+
+        # update after handling each tuple
+        self.tuple_handling_state = None
+
+        # update after handling (creating if Spout) each BarrierTuple
+        self.latest_checked_version = None
+
+        # create backup directories
+        self.backup_dir = os.path.join(CONSTANTS.ROOT_DIR, 'backup', node_id)
+        self.node_backup_dir = os.path.join(self.backup_dir, 'node')
+        for d in (self.backup_dir, self.node_backup_dir):
+            os.makedirs(d)
+
+        # socket for passing tuple
+        self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.sock.bind(('localhost', CONSTANTS.PORT_BASE + self.node_id))
+        self.sock.listen(2)
+
+    def multicast(self, group, msg):
+        for n in group:
+            try:
+                sock = socket.create_connection(('localhost', CONSTANTS.PORT_BASE + n))
+                sock.sendall(json.dumps(msg))
+            except socket.error, e:
+                LOGGER.error(e)
+            finally:
+                sock.close()
+
+    def checkpoint_version(self, version):
+        # touch a file
+        open(os.path.join(self.node_backup_dir, version)).close()
+        self.latest_checked_version = version
+
+    def run(self):
+        pass
+
+class Spout(Node):
+    """Source node with connecting node features
+    """
+
+    def __init__(self, node_id, downstream_nodes, downstream_cut, delay, barrier_interval, computing_state=0):
+        super(Spout, self).__init__(node_id, computing_state)
+
+        self.downstream_nodes = downstream_nodes
+        self.downstream_cut = downstream_cut
+        self.delay = delay
+        self.barrier_interval = barrier_interval
+
+        self.pending_window_backup_dir = os.path.join(self.backup_dir, 'pending_window')
+        self.pending_window = PendingWindow(self.pending_window_backup_dir)
+
+        def gen_tuple(self):
+            # step from the last computing state
+            i = self.computing_state + 1
+            while True:
+                if i % self.barrier_interval:
+                    output = [BarrierTuple(i, self.node_id, i)]
+                    self.checkpoint_version(i)
+                else:
+                    output = [Tuple(i, self.node_id)]
+                    self.computing_state = i
+
+                self.multicast(self.downstream_nodes, output)
+                self.tuple_handling_state = i
+
+                time.sleep(self.delay)
+                i += 1
+
+        def serve_inbound_connection(self):
+            while True:
+                conn, client = self.sock.accept()
+                data = json.loads(conn.recv(CONSTANTS.TCP_BUFFER_SIZE))
+
+                if isinstance(data, VersionAck):
+                    # TODO: add buffer and threading
+                    self.pending_window.handle_version_ack(data)
+                else:
+                    LOGGER.warn('received unknown data type %s' % type(data))
+
+        def run(self):
+            thread.start_new_thread(self.serve_inbound_connection, ())
+            thread.start_new_thread(self.gen_tuple, ())
+
+
+class Bolt(Node):
+    """Normal operating node without SegmentBackup
+    """
+
+    def __init__(self, node_id, type, rule, upstream_nodes, downstream_nodes=None, computing_state=0):
+        super(Bolt, self).__init__(node_id, computing_state)
+
         self.type = type
         self.rule = rule
         self.upstream_nodes = upstream_nodes
@@ -104,30 +198,8 @@ class Node(object):
             pass
         elif self.type == 'join':
             pass
-        elif self.type in ('source', 'sink'):
-            pass
         else:
             LOGGER.error('%s is not implemented' % self.type)
-
-        # socket for Tuple passing
-        self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.sock.bind(('localhost', CONSTANTS.PORT_BASE + self.node_id))
-        self.sock.listen(2)
-
-        # update after handling each tuple
-        self.cur_tuple_handling_state = 0
-
-        # update after handling each app tuple
-        self.cur_operator_computing_state = 0
-
-        # update after handling each BarrierTuple
-        self.latest_checked_version = None
-
-        # create backup directories
-        self.backup_dir = os.path.join(CONSTANTS.ROOT_DIR, 'backup', node_id)
-        self.node_backup_dir = os.path.join(self.backup_dir, 'node')
-        for d in (self.backup_dir, self.node_backup_dir):
-            os.makedirs(d)
 
         # if a queue is blocked, it only buffer the incoming tuples but not handle them
         # i.e., blocked refers to the HEAD of the queue
@@ -140,46 +212,39 @@ class Node(object):
         for n in upstream_nodes:
             self.input_queues[n] = InputQueue()
 
-    def multicast(self, group, msg):
-        for n in group:
-            try:
-                sock = socket.create_connection(('localhost', CONSTANTS.PORT_BASE + n))
-                sock.sendall(json.dumps(msg))
-            except socket.error, e:
-                LOGGER.error(e)
-            finally:
-                sock.close()
-
     def handle_tuple(self, tuple_):
-        """ General method to handle any received tuple, including sending out if applicable
+        """General method to handle any received tuple, including sending out if applicable
         """
         if isinstance(tuple_, BarrierTuple):
             self.handle_barrier(tuple_)
         else:
             self.handle_normal_tuple(tuple_)
 
-        self.cur_tuple_handling_state = tuple_.tuple_id
+        self.tuple_handling_state = tuple_.tuple_id
 
     def handle_normal_tuple(self, tuple_):
-        output = self.operator(tuple_)
-        self.cur_operator_computing_state = tuple_.tuple_id
+        if self.type == 'sink' and self.rule == 'print and store':
+            print tuple_.tuple_id
+            self.computing_state = tuple_.tuple_id
+            return [tuple_]
+        else:
+            output = self.operator(tuple_)
+            self.computing_state = tuple_.tuple_id
 
-        self.multicast(self.downstream_nodes, output)
-
-        return output
+            self.multicast(self.downstream_nodes, output)
+            return output
 
     def handle_barrier(self, barrier):
-        """ Return whether a version is completed
+        """Return whether a version is completed
         """
 
         # if this is the last barrier needed for a version, checkpoint a version and relay the barrier to downstream
         if all(self.input_queues[n].is_blocked for n in self.upstream_nodes if n != barrier.sent_from):
-            # checkpoint (touch a file)
-            open(os.path.join(self.node_backup_dir, barrier.version)).close()
-            self.latest_checked_version = barrier.version
+            self.checkpoint_version(barrier.version)
 
             # can relay the barrier now
-            self.multicast(self.downstream_nodes, [barrier])
+            if self.type != 'sink':
+                self.multicast(self.downstream_nodes, [barrier])
 
             # open all the channels after each checkpoint
             for n in self.upstream_nodes:
@@ -213,12 +278,17 @@ class Node(object):
             for t in data:
                 self.input_queues[t.sent_from].queue.put(t, block=True)
 
+    def run(self):
+        thread.start_new_thread(self.serve_inbound_connection, ())
+        thread.start_new_thread(self.consume_buffered_tuples, ())
 
-class ConnectingNode(Node):
+
+class Connector(Bolt):
     """docstring for ConnectingNode"""
-    def __init__(self, node_id, type, rule, upstream_nodes, downstream_nodes,
-                 upstream_cut=None, downstream_cut=None):
-        super(ConnectingNode, self).__init__(node_id, type, rule, upstream_nodes, downstream_nodes)
+
+    def __init__(self, node_id, type, rule, upstream_nodes, upstream_cut,
+                 downstream_nodes=None, downstream_cut=None, computing_state=0):
+        super(Connector, self).__init__(node_id, type, rule, upstream_nodes, downstream_nodes, computing_state)
         
         self.upstream_cut = upstream_cut
         self.downstream_cut = downstream_cut
@@ -231,14 +301,14 @@ class ConnectingNode(Node):
         # TODO: multiple upstream cuts should be valid too
         self.multicast(self.upstream_cut, VersionAck(self.node_id, version))
 
-    # TODO: base method use base method or ?
     def handle_normal_tuple(self, tuple_):
-        output = super(ConnectingNode, self).handle_normal_tuple(tuple_)
+        output = super(Connector, self).handle_normal_tuple(tuple_)
 
-        self.pending_window.extend(output)
+        if self.type != 'sink' or self.rule == 'print and store':
+            self.pending_window.extend(output)
 
     def handle_barrier(self, barrier):
-        is_version = super(ConnectingNode, self).handle_barrier(barrier)
+        is_version = super(Connector, self).handle_barrier(barrier)
 
         if is_version:
             self.pending_window.append(barrier)

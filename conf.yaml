@@ -13,6 +13,7 @@ nodes:
         is_connecting: True
         type: source
         delay: 2 # seconds
+        barrier_interval: 50
         cut: 0
         to:
             - 2
