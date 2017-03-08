@@ -142,35 +142,35 @@ class Spout(Node):
         self.pending_window_backup_dir = os.path.join(self.backup_dir, 'pending_window')
         self.pending_window = PendingWindow(self.pending_window_backup_dir)
 
-        def gen_tuple(self):
-            # step from the last computing state
-            i = self.computing_state + 1
-            while True:
-                if i % self.barrier_interval:
-                    output = [BarrierTuple(i, self.node_id, i)]
-                    self.checkpoint_version(i)
-                else:
-                    output = [Tuple(i, self.node_id)]
-                    self.computing_state = i
+    def gen_tuple(self):
+        # step from the last computing state
+        i = self.computing_state + 1
+        while True:
+            if i % self.barrier_interval:
+                output = [BarrierTuple(i, self.node_id, i)]
+                self.checkpoint_version(i)
+            else:
+                output = [Tuple(i, self.node_id)]
+                self.computing_state = i
 
-                self.multicast(self.downstream_nodes, output)
-                self.tuple_handling_state = i
+            self.multicast(self.downstream_nodes, output)
+            self.tuple_handling_state = i
 
-                time.sleep(self.delay)
-                i += 1
+            time.sleep(self.delay)
+            i += 1
 
-        def serve_inbound_connection(self):
-            while True:
-                conn, client = self.sock.accept()
-                data = json.loads(conn.recv(CONSTANTS.TCP_BUFFER_SIZE))
+    def serve_inbound_connection(self):
+        while True:
+            conn, client = self.sock.accept()
+            data = json.loads(conn.recv(CONSTANTS.TCP_BUFFER_SIZE))
 
-                if isinstance(data, VersionAck):
-                    # TODO: add buffer and threading
-                    self.pending_window.handle_version_ack(data)
-                else:
-                    LOGGER.warn('received unknown data type %s' % type(data))
+            if isinstance(data, VersionAck):
+                # TODO: add buffer and threading
+                self.pending_window.handle_version_ack(data)
+            else:
+                LOGGER.warn('received unknown data type %s' % type(data))
 
-        def run(self):
+    def run(self):
             thread.start_new_thread(self.serve_inbound_connection, ())
             thread.start_new_thread(self.gen_tuple, ())
 

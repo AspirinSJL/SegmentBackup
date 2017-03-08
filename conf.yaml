@@ -1,35 +1,34 @@
 cuts:
     0:
-        cnodes:
+        cut:
             - 1
-        snodes:
+        cover:
     1:
-        cnodes:
+        cut:
             - 3
-        snodes:
+        cover:
 
 nodes:
     1:
-        is_connecting: True
-        type: source
+        type: spout
         delay: 2 # seconds
         barrier_interval: 50
         cut: 0
         to:
             - 2
-        to_cut_no:
+        to_cut_id:
             - 1
     2:
-        is_connecting: False
         type: filter
         rule: 'lambda t: t.tuple_id % 2'
+        is_connecting: False
         from:
             - 1
         to:
             - 3
     3:
-        is_connecting: True
         type: sink
+        rule: 'print and store'
         cut: 1
         from:
             - 2
