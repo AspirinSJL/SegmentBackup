@@ -1,36 +1,26 @@
-cuts:
-    0:
-        cut:
-            - 1
-        cover:
-    1:
-        cut:
-            - 3
-        cover:
-
-nodes:
-    1:
-        type: spout
-        delay: 2 # seconds
-        barrier_interval: 50
-        cut: 0
-        to:
-            - 2
-        to_cut_id:
-            - 1
-    2:
-        type: filter
-        rule: 'lambda t: t.tuple_id % 2'
-        is_connecting: False
-        from:
-            - 1
-        to:
-            - 3
-    3:
-        type: sink
-        rule: 'print and store'
-        cut: 1
-        from:
-            - 2
-        from_cut_no:
-            - 0
+1:
+    type: spout
+    delay: 2 # seconds
+    barrier_interval: 50
+    downstream_nodes:
+        - 2
+    downstream_connectors:
+        - 3
+    cover:
+        - 2
+        - 3
+2:
+    type: filter
+    rule: 'lambda t: t.tuple_id % 2'
+    is_connecting: False
+    upstream_nodes:
+        - 1
+    downstream_nodes:
+        - 3
+3:
+    type: sink
+    rule: 'print and store'
+    upstream_nodes:
+        - 2
+    upstream_connectors:
+          - 1

@@ -1,3 +1,5 @@
+#!/usr/bin/env python
+
 import CONSTANTS
 from node import *
 from tuple import *
@@ -6,7 +8,7 @@ import os
 import shutil
 import time
 import yaml
-import cPic_idle as pic_idle
+import pickle
 from subprocess import Popen
 from optparse import OptionParser
 
@@ -31,79 +33,75 @@ class AppStarter(object):
         self.start_mode = start_mode
 
         # Topo information
-        # In production, it should be ready in any standby data-center for quic_id handing over
-        self.pic_idle_dir = os.path.join(CONSTANTS.ROOT_DIR, 'pic_idled_nodes')
+        # In production, it should be ready in any standby data-center for quick handing over
+        self.pickle_dir = os.path.join(CONSTANTS.ROOT_DIR, 'pickled_nodes')
 
-        self.bac_idup_dir = os.path.join(CONSTANTS.ROOT_DIR, 'bac_idup_dir')
+        self.backup_dir = os.path.join(CONSTANTS.ROOT_DIR, 'backup')
 
         if start_mode == 'new':
             # create/overwrite these directories
-            for d in (self.pic_idle_dir, self.bac_idup_dir):
+            for d in (self.pickle_dir, self.backup_dir):
                 if os.path.exists(d):
                     shutil.rmtree(d)
                 os.makedirs(d)
 
-        # self.nodes = {}
-
     def configure_nodes(self):
-        """Turn the conf_file into node instances, and pic_idle them for reuse
+        """Turn the config into node instances, and pickle them for reuse
         """
 
-        def lookup_cut(cut_id):
-            if cut_id == None:
-                return None
-            return self.conf['cuts'][cut_id]['cut']
-
-        for n_id, n_info in self.conf['nodes'].iteritems():
+        for n_id, n_info in self.conf.iteritems():
             if n_info['type'] == 'spout':
-                node = Spout(n_id, n_info['to'], lookup_cut(n_info['to_cut_id']),
+                node = Spout(n_id, n_info['type'], n_info['downstream_nodes'], n_info['downstream_connectors'],
                              n_info['delay'], n_info['barrier_interval'])
             else:
                 if n_info['type'] == 'sink' or n_info['is_connecting']:
                     node = Connector(n_id, n_info['type'], n_info['rule'],
-                                     n_info['from'], lookup_cut(n_info['from_cut_id']),
-                                     n_info.get('to', None), lookup_cut(n_info.get('to_cut_id', None)))
+                                     n_info['upstream_nodes'], n_info['upstream_connectors'],
+                                     n_info.get('downstream_nodes', None), n_info.get('downstream_connectors', None))
                 else:
-                    node = Bolt(n_id, n_info['type'], n_info['rule'], n_info['from'], n_info['to'])
+                    node = Bolt(n_id, n_info['type'], n_info['rule'],
+                                n_info['upstream_nodes'], n_info['downstream_nodes'])
 
-            # self.nodes[n] = node
-            pic_idle.dump(node, open(os.path.join(self.pic_idle_dir, '%d.pkl' % n_id), 'wb'))
+            with open(os.path.join(self.pickle_dir, '%d.pkl' % n_id), 'wb') as f:
+                pickle.dump(node, f, protocol=-1)
+                LOGGER.info('node %d pickled' % n_id)
 
     def recover_nodes(self):
-        """Adjust the bac_idup data (both pending window and node state) to the latest consistent state,
-            and update the pic_idled nodes to that state
+        """Adjust the backup data (both pending window and node state) to the latest consistent state,
+            and update the pickled nodes to that state
         """
+        nodes = {n: pickle.load(os.path.join(self.pickle_dir, '%d.pkl' % n)) for n in self.conf}
 
-        # adjust state (should be BFS or DFS)
-        for c_id, c_info in self.conf['cuts'].iteritems():
-            # because a cut may have multiple downstream cuts,
-            # so we make every cut responsible for its upstream coverage
-            if c_id == 0:
-                continue
+        # adjust state (should be BFS or DFS?)
+        for c_id, c_info in self.conf.iteritems():
+            # each connector should be responsible for make its downstream segment consistent
+            # if multiple connectors converge to a single downstream connector, they should have agreement naturally
+            # agreement should be achieved in lower level by some classical distributed algorithm
+            if c_info['type'] == 'spout' or c_info['is_connecting']:
+                # TODO: no valid backup version
+                with open(os.path.join(self.backup_dir, c_id, 'backup', 'pending_window', 'safe_version')) as f:
+                    # the tuples before (inclusively) safe version have been handled by downstream connectors
+                    safe_version = f.read()
 
-            # the segment-ending nodes
-            connecting_nodes = c_info['cut']
-            # the interior nodes
-            segment_nodes = c_info['cover']
+                # 1. adjust node state
+                for n in c_info['cover']:
+                    nodes[n].computing_state = safe_version
 
-            # the version that cut truncated to = min(node versions of the seg-end cut)
-            # TODO: no valid backup version
-            safe_version = min(
-                max(filter(lambda i: i.isdigits(), os.listdir(os.path.join(self.bac_idup_dir, n, 'node'))))
-                for n in connecting_nodes)
-            for n in segment_nodes:
-                self.nodes[n].latest_chec_ided_version = safe_version
+                # 2. adjust pending window state
+                for n in c_info['downstream_connectors']:
+                    nodes[n].pending_window.rewind(safe_version)
 
-            for n in connecting_nodes:
-                n.pending_window.rewind(safe_version)
+        for n in nodes:
+            pickle.dump(n, open(os.path.join(self.pickle_dir, '%d.pkl' % n), 'wb'))
 
     def start_nodes(self):
         """Load each pic_idled node and run it in a new process
         """
 
-        for n in reversed(self.conf):
+        for n in reversed(self.conf.keys()):
             Popen([os.path.join(CONSTANTS.ROOT_DIR, 'start_node.py'),
-                   '-f', os.path.join(CONSTANTS.ROOT_DIR, '%d.pkl' % n)])
+                   '-f', os.path.join(CONSTANTS.ROOT_DIR, '%d.pkl' % n),
+                   '-m', self.start_mode])
 
     def start_app(self):
         self.configure_nodes()
@@ -123,12 +121,14 @@ class AppStarter(object):
 
 if __name__ == '__main__':
     parser = OptionParser()
-    parser.add_option('-m', '--mode', dest='start_mode', help='new or restart')
-    parser.add_option('-f', '--file', dest='conf_file', default=os.path.join(CONSTANTS.ROOT_DIR, 'conf.yaml'))
+    parser.add_option('-m', '--mode', action='store', dest='start_mode', default='new',
+                      help='new or restart')
+    parser.add_option('-f', '--file', action='store', dest='conf_file',
+                      default=os.path.join(CONSTANTS.ROOT_DIR, 'conf.yaml'))
 
     (options, args) = parser.parse_args()
-    if len(args) != 2:
-        parser.error('incorrect number of arguments')
+    # if len(options) < 1:
+    #     parser.error('%d args is too few' % len(options))
 
-    starter = AppStarter(args.conf_file, args.start_mode)
+    starter = AppStarter(options.conf_file, options.start_mode)
     starter.run()
