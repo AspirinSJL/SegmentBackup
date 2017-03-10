@@ -2,7 +2,7 @@ from tuple import *
 
 import os
 import cPickle as pickle
-
+from collections import deque
 
 class PendingWindow(object):
     """docstring for PendingWindow"""
