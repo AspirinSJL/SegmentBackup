@@ -12,7 +12,7 @@ import Queue
 import socket
 import pickle
 import json
-from collections import deque
+from collections import namedtuple
 
 
 logging.basicConfig(
@@ -120,13 +120,6 @@ class Spout(Node):
         thread.start_new_thread(self.serve_inbound_connection, ())
         thread.start_new_thread(self.gen_tuple, ())
 
-# if a queue is blocked, it only buffer the incoming tuples but not handle them
-# i.e., blocked refers to the HEAD of the queue
-class InputQueue(object):
-    def __init__(self):
-        self.is_blocked = False
-        self.queue = Queue.Queue()
-
 
 class Bolt(Node):
     """Normal operating node without SegmentBackup
@@ -140,9 +133,12 @@ class Bolt(Node):
         self.downstream_nodes = downstream_nodes
 
     def prepare(self):
+        # if a queue is blocked, it only buffer the incoming tuples but not handle them
+        # i.e., blocked refers to the HEAD of the queue
         self.input_queues = dict()
+        InputQueue = namedtuple('InputQueue', 'is_blocked queue')
         for n in self.upstream_nodes:
-            self.input_queues[n] = InputQueue()
+            self.input_queues[n] = InputQueue(False, Queue.Queue())
 
         # construct an operator according to node type and rule
         # the operator usually takes in a Tuple and return a list of Tuples
