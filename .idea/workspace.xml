@@ -1,9 +1,8 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <project version="4">
   <component name="ChangeListManager">
-    <list default="true" id="1117b472-81ca-4020-9c9c-400c78402125" name="Default" comment="Separated pending window">
+    <list default="true" id="1117b472-81ca-4020-9c9c-400c78402125" name="Default" comment="">
       <change type="MODIFICATION" beforePath="$PROJECT_DIR$/.idea/workspace.xml" afterPath="$PROJECT_DIR$/.idea/workspace.xml" />
-      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/node.py" afterPath="$PROJECT_DIR$/node.py" />
     </list>
     <option name="EXCLUDED_CONVERTED_TO_IGNORED" value="true" />
     <option name="TRACKING_ENABLED" value="true" />
@@ -451,7 +450,14 @@
       <option name="project" value="LOCAL" />
       <updated>1489167186247</updated>
     </task>
-    <option name="localTasksCounter" value="10" />
+    <task id="LOCAL-00010" summary="Refactored InputQueue to namedtuple">
+      <created>1489168646134</created>
+      <option name="number" value="00010" />
+      <option name="presentableId" value="LOCAL-00010" />
+      <option name="project" value="LOCAL" />
+      <updated>1489168646134</updated>
+    </task>
+    <option name="localTasksCounter" value="11" />
     <servers />
   </component>
   <component name="TodoView">
@@ -498,7 +504,8 @@
     <MESSAGE value="Refining starter logic, incomplete" />
     <MESSAGE value="Logic done, debugging" />
     <MESSAGE value="Separated pending window" />
-    <option name="LAST_COMMIT_MESSAGE" value="Separated pending window" />
+    <MESSAGE value="Refactored InputQueue to namedtuple" />
+    <option name="LAST_COMMIT_MESSAGE" value="Refactored InputQueue to namedtuple" />
   </component>
   <component name="XDebuggerManager">
     <breakpoint-manager>
