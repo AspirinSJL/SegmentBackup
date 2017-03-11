@@ -1,5 +1,6 @@
 1:
     type: spout
+    is_connecting: True
     delay: 2 # seconds
     barrier_interval: 50
     downstream_nodes:
@@ -20,6 +21,7 @@
 3:
     type: sink
     rule: 'print and store'
+    is_connecting: True
     upstream_nodes:
         - 2
     upstream_connectors:

@@ -1,8 +1,21 @@
 from tuple import *
 
 import os
+import logging
 import cPickle as pickle
 from collections import deque
+
+
+logging.basicConfig(
+    level=logging.DEBUG,
+    format='%(asctime)s %(levelname)s %(threadName)-10s %(message)s',
+    # Separate logs by each instance starting
+    # filename='log.' + str(int(time.time())),
+    # filemode='w',
+)
+
+LOGGER = logging.getLogger('Pending Window')
+
 
 class PendingWindow(object):
     """docstring for PendingWindow"""
@@ -16,8 +29,8 @@ class PendingWindow(object):
 
         self.node = node
 
-        # each backup file is named by the ending version, so the current writing one is named temporarily
-        self.current_file = open(os.path.join(self.backup_dir, 'current'), 'wb')
+        # # each backup file is named by the ending version, so the current writing one is named temporarily
+        # self.current_file = open(os.path.join(self.backup_dir, 'current'), 'wb')
 
         # the version that last truncation conducted against
         self.safe_version_file = open(os.path.join(self.backup_dir, 'safe_version'), 'w')
@@ -32,14 +45,19 @@ class PendingWindow(object):
         """Make an output tuple persistent, and complete a version if necessary
         """
 
-        pickle.dump(tuple_, self.current_file)
+        # for atomicity
+        with open(os.path.join(self.backup_dir, 'temp')) as f:
+            pickle.dump(tuple_, f)
 
-        if isinstance(tuple_, BarrierTuple):
-            self.current_file.close()
-            os.rename(os.path.join(self.backup_dir, 'current'),
-                os.path.join(self.backup_dir, str(tuple_.version)))
+        os.rename(os.path.join(self.backup_dir, 'temp'),
+                  os.path.join(self.backup_dir, str(tuple_.version)))
 
-            self.current_file = open(os.path.join(self.backup_dir, 'current'), 'w')
+        # if isinstance(tuple_, BarrierTuple):
+        #     self.current_file.close()
+        #     os.rename(os.path.join(self.backup_dir, 'current'),
+        #         os.path.join(self.backup_dir, str(tuple_.version)))
+        #
+        #     self.current_file = open(os.path.join(self.backup_dir, 'current'), 'wb')
 
     def extend(self, tuples):
         # TODO: can be improved
@@ -73,7 +91,7 @@ class PendingWindow(object):
         """
 
         for f in os.listdir(self.backup_dir):
-            if f == 'current' or int(f) > version:
+            if f != 'safe_version' and (f == 'temp' or int(f) > version):
                 os.remove(os.path.join(self.backup_dir, f))
 
         self.current_file = open(os.path.join(self.backup_dir, 'current'), 'w')
@@ -88,7 +106,9 @@ class PendingWindow(object):
                 # TODO: incomplete writing
                 while True:
                     try:
+                        LOGGER.info('unpickling')
                         tuples.append(pickle.load(f))
+                        LOGGER.info('pickled')
                     except EOFError:
                         break
 

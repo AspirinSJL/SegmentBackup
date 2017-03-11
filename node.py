@@ -51,8 +51,10 @@ class Node(object):
 
     def multicast(self, group, msg):
         for n in group:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             try:
-                sock = socket.create_connection(('localhost', CONSTANTS.PORT_BASE + n))
+                # LOGGER.info('connecting to node %d from node %d' % (n, self.node_id))
+                sock.connect(('localhost', CONSTANTS.PORT_BASE + n))
                 # TODO: non-blocking?
                 sock.sendall(pickle.dumps(msg))
             except socket.error, e:
@@ -62,7 +64,7 @@ class Node(object):
 
     def checkpoint_version(self, version):
         # touch a file
-        open(os.path.join(self.node_backup_dir, version)).close()
+        open(os.path.join(self.node_backup_dir, str(version)), 'w').close()
         self.latest_checked_version = version
 
     def run(self):
@@ -120,6 +122,9 @@ class Spout(Node):
         thread.start_new_thread(self.serve_inbound_connection, ())
         thread.start_new_thread(self.gen_tuple, ())
 
+        while True:
+            pass
+
 
 class Bolt(Node):
     """Normal operating node without SegmentBackup
@@ -151,6 +156,8 @@ class Bolt(Node):
         elif self.type == 'reduce':
             pass
         elif self.type == 'join':
+            pass
+        elif self.type == 'sink':
             pass
         else:
             LOGGER.error('%s is not implemented' % self.type)
@@ -222,10 +229,15 @@ class Bolt(Node):
                 self.input_queues[t.sent_from].queue.put(t, block=True)
 
     def run(self):
+        super(Bolt, self).run()
+        
         self.prepare()
 
         thread.start_new_thread(self.serve_inbound_connection, ())
         thread.start_new_thread(self.consume_buffered_tuples, ())
+
+        while True:
+            pass
 
 
 class Connector(Bolt):

@@ -70,16 +70,19 @@ class AppStarter(object):
         """Adjust the backup data (both pending window and node state) to the latest consistent state,
             and update the pickled nodes to that state
         """
-        nodes = {n: pickle.load(os.path.join(self.pickle_dir, '%d.pkl' % n)) for n in self.conf}
-
+        nodes = {}
+        for n in self.conf:
+            with open(os.path.join(self.pickle_dir, '%d.pkl' % n), 'rb') as f:
+                nodes[n] = pickle.load(f)
+        print nodes
         # adjust state (should be BFS or DFS?)
         for c_id, c_info in self.conf.iteritems():
             # each connector should be responsible for make its downstream segment consistent
             # if multiple connectors converge to a single downstream connector, they should have agreement naturally
             # agreement should be achieved in lower level by some classical distributed algorithm
-            if c_info['type'] == 'spout' or c_info['is_connecting']:
+            if c_info['is_connecting'] and c_info['type'] != 'sink':
                 # TODO: no valid backup version
-                with open(os.path.join(self.backup_dir, c_id, 'backup', 'pending_window', 'safe_version')) as f:
+                with open(os.path.join(self.backup_dir, str(c_id), 'pending_window', 'safe_version')) as f:
                     # the tuples before (inclusively) safe version have been handled by downstream connectors
                     safe_version = f.read()
 
@@ -92,16 +95,19 @@ class AppStarter(object):
                     nodes[n].pending_window.rewind(safe_version)
 
         for n in nodes:
-            pickle.dump(n, open(os.path.join(self.pickle_dir, '%d.pkl' % n), 'wb'))
+            with open(os.path.join(self.pickle_dir, '%d.pkl' % n), 'wb') as f:
+                pickle.dump(nodes[n], f, protocol=-1)
 
     def start_nodes(self):
         """Load each pic_idled node and run it in a new process
         """
 
         for n in reversed(self.conf.keys()):
-            Popen([os.path.join(CONSTANTS.ROOT_DIR, 'start_node.py'),
-                   '-f', os.path.join(CONSTANTS.ROOT_DIR, '%d.pkl' % n),
-                   '-m', self.start_mode])
+            LOGGER.info('starting node %d' % n)
+
+            Popen(['python', os.path.join(CONSTANTS.ROOT_DIR, 'start_node.py'),
+                   '-f', os.path.join(CONSTANTS.ROOT_DIR, 'pickled_nodes', '%d.pkl' % n),
+                   '-r' if self.start_mode == 'restart' and self.conf[n]['is_connecting'] and self.conf[n]['type'] != 'sink' else ''])
 
     def start_app(self):
         self.configure_nodes()
