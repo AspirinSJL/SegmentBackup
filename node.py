@@ -17,13 +17,11 @@ from collections import namedtuple
 
 logging.basicConfig(
     level=logging.DEBUG,
-    format='%(asctime)s %(levelname)s %(threadName)-10s %(message)s',
+    format='%(asctime)s %(levelname)s %(name)s %(threadName)-10s %(message)s',
     # Separate logs by each instance starting
     # filename='log.' + str(int(time.time())),
     # filemode='w',
 )
-
-LOGGER = logging.getLogger('Node')
 
 
 class Node(object):
@@ -49,16 +47,40 @@ class Node(object):
         for d in (self.backup_dir, self.node_backup_dir):
             os.makedirs(d)
 
+    def prepare(self):
+        """Operate before each running
+            because some things can't be pickled, of course
+        """
+
+        self.LOGGER = logging.getLogger('Node %d' % self.node_id)
+
+        # socket for passing tuple
+        self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.sock.bind(('localhost', CONSTANTS.PORT_BASE + self.node_id))
+        self.sock.listen(2)
+
     def multicast(self, group, msg):
+        if msg in (None, []):
+            return
+
+        # modify sent_from field
+        if isinstance(msg, VersionAck):
+            msg.sent_from = self.node_id
+        else:
+            for t in msg:
+                t.sent_from = self.node_id
+
+        # send to each destination in group
         for n in group:
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             try:
-                # LOGGER.info('connecting to node %d from node %d' % (n, self.node_id))
+                self.LOGGER.debug('connecting to node %d from node %d' % (n, self.node_id))
                 sock.connect(('localhost', CONSTANTS.PORT_BASE + n))
                 # TODO: non-blocking?
                 sock.sendall(pickle.dumps(msg))
+                self.LOGGER.debug('sent to node %d from node %d' % (n, self.node_id))
             except socket.error, e:
-                LOGGER.error(e)
+                self.LOGGER.error(e)
             finally:
                 sock.close()
 
@@ -67,11 +89,6 @@ class Node(object):
         open(os.path.join(self.node_backup_dir, str(version)), 'w').close()
         self.latest_checked_version = version
 
-    def run(self):
-        # socket for passing tuple
-        self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.sock.bind(('localhost', CONSTANTS.PORT_BASE + self.node_id))
-        self.sock.listen(2)
 
 class Spout(Node):
     """Source node with connecting node features
@@ -92,13 +109,14 @@ class Spout(Node):
         # step from the last computing state
         i = self.computing_state + 1
         while True:
-            if i % self.barrier_interval:
+            if i % self.barrier_interval == 0:
                 output = [BarrierTuple(i, self.node_id, i)]
                 self.checkpoint_version(i)
             else:
                 output = [Tuple(i, self.node_id)]
                 self.computing_state = i
 
+            self.pending_window.extend(output)
             self.multicast(self.downstream_nodes, output)
             self.tuple_handling_state = i
 
@@ -114,10 +132,13 @@ class Spout(Node):
                 # TODO: add buffer and threading
                 self.pending_window.handle_version_ack(data)
             else:
-                LOGGER.warn('received unknown data type %s' % type(data))
+                self.LOGGER.warn('received unknown data type %s' % type(data))
 
-    def run(self):
-        super(Spout, self).run()
+    def run(self, replay=False):
+        self.prepare()
+
+        if replay:
+            self.pending_window.replay()
 
         thread.start_new_thread(self.serve_inbound_connection, ())
         thread.start_new_thread(self.gen_tuple, ())
@@ -138,21 +159,25 @@ class Bolt(Node):
         self.downstream_nodes = downstream_nodes
 
     def prepare(self):
+        super(Bolt, self).prepare()
+
         # if a queue is blocked, it only buffer the incoming tuples but not handle them
         # i.e., blocked refers to the HEAD of the queue
         self.input_queues = dict()
-        InputQueue = namedtuple('InputQueue', 'is_blocked queue')
         for n in self.upstream_nodes:
-            self.input_queues[n] = InputQueue(False, Queue.Queue())
+            self.input_queues[n] = {
+                'is_blocked': False,
+                'queue': Queue.Queue()
+            }
 
         # construct an operator according to node type and rule
         # the operator usually takes in a Tuple and return a list of Tuples
         # TODO: make operator more flexible
         # TODO: should in __init__
         if self.type == 'filter':
-            self.operator = lambda t: filter(self.rule, [t])
+            self.operator = lambda t: filter(eval(self.rule), [t])
         elif self.type == 'transform':
-            self.operator = lambda t: map(self.rule, [t])
+            self.operator = lambda t: map(eval(self.rule), [t])
         elif self.type == 'reduce':
             pass
         elif self.type == 'join':
@@ -160,11 +185,12 @@ class Bolt(Node):
         elif self.type == 'sink':
             pass
         else:
-            LOGGER.error('%s is not implemented' % self.type)
+            self.LOGGER.error('%s is not implemented' % self.type)
 
     def handle_tuple(self, tuple_):
         """General method to handle any received tuple, including sending out if applicable
         """
+
         if isinstance(tuple_, BarrierTuple):
             self.handle_barrier(tuple_)
         else:
@@ -174,7 +200,6 @@ class Bolt(Node):
 
     def handle_normal_tuple(self, tuple_):
         if self.type == 'sink' and self.rule == 'print and store':
-            print tuple_.tuple_id
             self.computing_state = tuple_.tuple_id
             return [tuple_]
         else:
@@ -189,7 +214,7 @@ class Bolt(Node):
         """
 
         # if this is the last barrier needed for a version, checkpoint a version and relay the barrier to downstream
-        if all(self.input_queues[n].is_blocked for n in self.upstream_nodes if n != barrier.sent_from):
+        if all(self.input_queues[n]['is_blocked'] for n in self.upstream_nodes if n != barrier.sent_from):
             self.checkpoint_version(barrier.version)
 
             # can relay the barrier now
@@ -199,12 +224,12 @@ class Bolt(Node):
             # open all the channels after each checkpoint
             for n in self.upstream_nodes:
                 if n != barrier.sent_from:
-                    self.input_queues[n].is_blocked = False
+                    self.input_queues[n]['is_blocked'] = False
 
             return True
         else:
             # stop handling the tuples from this sender to wait for others
-            self.input_queues[barrier.sent_from].is_blocked = True
+            self.input_queues[barrier.sent_from]['is_blocked'] = True
 
             return False
 
@@ -212,25 +237,24 @@ class Bolt(Node):
         # round robin
         while True:
             for q in self.input_queues.values():
-                if q.queue.empty() or q.is_blocked:
+                if q['queue'].empty() or q['is_blocked']:
                     continue
 
-                self.handle_tuple(q.queue.get())
-                q.queue.task_done()
+                self.handle_tuple(q['queue'].get())
+                q['queue'].task_done()
 
     def serve_inbound_connection(self):
         while True:
             conn, client = self.sock.accept()
+            time.sleep(CONSTANTS.LINK_DELAY)
             data = pickle.loads(conn.recv(CONSTANTS.TCP_BUFFER_SIZE))
 
             assert data and isinstance(data, list) and isinstance(data[0], Tuple)
             # put the tuple list into according buffer for later handling
             for t in data:
-                self.input_queues[t.sent_from].queue.put(t, block=True)
+                self.input_queues[t.sent_from]['queue'].put(t, block=True)
 
     def run(self):
-        super(Bolt, self).run()
-        
         self.prepare()
 
         thread.start_new_thread(self.serve_inbound_connection, ())
@@ -268,13 +292,19 @@ class Connector(Bolt):
         is_version = super(Connector, self).handle_barrier(barrier)
 
         if is_version:
-            self.pending_window.append(barrier)
+            if self.type != 'sink':
+                self.pending_window.append(barrier)
             self.ack_version(barrier.version)
 
     def serve_inbound_connection(self):
         while True:
             conn, client = self.sock.accept()
+
+            time.sleep(CONSTANTS.LINK_DELAY)
+
             data = pickle.loads(conn.recv(CONSTANTS.TCP_BUFFER_SIZE))
+
+            self.LOGGER.debug('received data')
 
             if isinstance(data, VersionAck):
                 # TODO: add buffer and threading
@@ -282,6 +312,18 @@ class Connector(Bolt):
             elif isinstance(data, list):
                 assert data and isinstance(data[0], Tuple)
                 for t in data:
-                    self.input_queues[t.sent_from].queue.put(t, block=True)
+                    self.input_queues[t.sent_from]['queue'].put(t, block=True)
             else:
-                LOGGER.warn('received unknown data type %s' % type(data))
+                self.LOGGER.warn('received unknown data type %s' % type(data))
+
+    def run(self, replay=False):
+        self.prepare()
+
+        if replay:
+            self.pending_window.replay()
+
+        thread.start_new_thread(self.serve_inbound_connection, ())
+        thread.start_new_thread(self.consume_buffered_tuples, ())
+
+        while True:
+            pass

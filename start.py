@@ -74,7 +74,7 @@ class AppStarter(object):
         for n in self.conf:
             with open(os.path.join(self.pickle_dir, '%d.pkl' % n), 'rb') as f:
                 nodes[n] = pickle.load(f)
-        print nodes
+
         # adjust state (should be BFS or DFS?)
         for c_id, c_info in self.conf.iteritems():
             # each connector should be responsible for make its downstream segment consistent
@@ -84,7 +84,7 @@ class AppStarter(object):
                 # TODO: no valid backup version
                 with open(os.path.join(self.backup_dir, str(c_id), 'pending_window', 'safe_version')) as f:
                     # the tuples before (inclusively) safe version have been handled by downstream connectors
-                    safe_version = f.read()
+                    safe_version = int(f.read())
 
                 # 1. adjust node state
                 for n in c_info['cover']:

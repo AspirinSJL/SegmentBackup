@@ -33,8 +33,8 @@ class PendingWindow(object):
         # self.current_file = open(os.path.join(self.backup_dir, 'current'), 'wb')
 
         # the version that last truncation conducted against
-        self.safe_version_file = open(os.path.join(self.backup_dir, 'safe_version'), 'w')
-        self.safe_version_file.write(str(0))
+        with open(os.path.join(self.backup_dir, 'safe_version'), 'w') as f:
+            f.write(str(0))
 
         if self.node.type != 'sink':
             self.version_acks = dict()
@@ -46,11 +46,11 @@ class PendingWindow(object):
         """
 
         # for atomicity
-        with open(os.path.join(self.backup_dir, 'temp')) as f:
+        with open(os.path.join(self.backup_dir, 'temp'), 'wb') as f:
             pickle.dump(tuple_, f)
 
         os.rename(os.path.join(self.backup_dir, 'temp'),
-                  os.path.join(self.backup_dir, str(tuple_.version)))
+                  os.path.join(self.backup_dir, str(tuple_.tuple_id)))
 
         # if isinstance(tuple_, BarrierTuple):
         #     self.current_file.close()
@@ -68,10 +68,11 @@ class PendingWindow(object):
         """Delete files with filename <= version
         """
 
-        self.safe_version_file.seek(0)
-        self.safe_version_file.write(str(version))
-        # note that this 'truncate()' means differently in Python from our definition
-        self.safe_version_file.truncate()
+        with open(os.path.join(self.backup_dir, 'safe_version'), 'w') as f:
+            # f.seek(0)
+            f.write(str(version))
+            # # note that this 'truncate()' means differently in Python from our definition
+            # self.safe_version_file.truncate()
 
         for f in os.listdir(self.backup_dir):
             if f.isdigit() and int(f) <= version:
@@ -80,7 +81,7 @@ class PendingWindow(object):
     def handle_version_ack(self, version_ack):
         self.version_acks[version_ack.sent_from].append(version_ack.version)
 
-        if all(self.version_acks.values()) and set(map(lambda q: q[0], self.version_acks.values())) == 1:
+        if all(self.version_acks.values()) and len(set(map(lambda q: q[0], self.version_acks.values()))) == 1:
             self.truncate(version_ack.version)
 
             for q in self.version_acks.values():
@@ -94,22 +95,21 @@ class PendingWindow(object):
             if f != 'safe_version' and (f == 'temp' or int(f) > version):
                 os.remove(os.path.join(self.backup_dir, f))
 
-        self.current_file = open(os.path.join(self.backup_dir, 'current'), 'w')
+        # self.current_file = open(os.path.join(self.backup_dir, 'current'), 'w')
 
     def replay(self):
         """When both the node and pending window state are ready, replay the pending window before resuming
         """
 
-        for v in sorted(os.listdir(self.backup_dir)):
-            tuples = []
-            with open(os.path.join(self.backup_dir, v), 'rb') as f:
-                # TODO: incomplete writing
-                while True:
-                    try:
-                        LOGGER.info('unpickling')
-                        tuples.append(pickle.load(f))
-                        LOGGER.info('pickled')
-                    except EOFError:
-                        break
+        tuples = []
+        for t_id in sorted(filter(str.isdigit, os.listdir(self.backup_dir))):
+            with open(os.path.join(self.backup_dir, t_id), 'rb') as f:
+                # TODO: incomplete writing when compacted
+                try:
+                    t = pickle.load(f)
+                    tuples.append(t)
+                except pickle.UnpicklingError:
+                    print 'unpickle end'
+                    break
 
-            self.node.multicast(self.node.downstream_nodes, tuples)
+        self.node.multicast(self.node.downstream_nodes, tuples)

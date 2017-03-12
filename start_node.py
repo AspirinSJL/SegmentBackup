@@ -17,5 +17,6 @@ parser.add_option('-r', '--replay', dest='replay', action='store_true', default=
 
 node = pickle.load(open(options.pickled_file, 'rb'))
 if options.replay:
-    node.pending_window.replay()
-node.run()
+    node.run(replay=True)
+else:
+    node.run()
