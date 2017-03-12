@@ -3,12 +3,6 @@
   <component name="ChangeListManager">
     <list default="true" id="1117b472-81ca-4020-9c9c-400c78402125" name="Default" comment="">
       <change type="MODIFICATION" beforePath="$PROJECT_DIR$/.idea/workspace.xml" afterPath="$PROJECT_DIR$/.idea/workspace.xml" />
-      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/CONSTANTS.py" afterPath="$PROJECT_DIR$/CONSTANTS.py" />
-      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/conf.yaml" afterPath="$PROJECT_DIR$/conf.yaml" />
-      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/node.py" afterPath="$PROJECT_DIR$/node.py" />
-      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/pending_window.py" afterPath="$PROJECT_DIR$/pending_window.py" />
-      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/start.py" afterPath="$PROJECT_DIR$/start.py" />
-      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/start_node.py" afterPath="$PROJECT_DIR$/start_node.py" />
     </list>
     <option name="EXCLUDED_CONVERTED_TO_IGNORED" value="true" />
     <option name="TRACKING_ENABLED" value="true" />
@@ -48,11 +42,21 @@
           </provider>
         </entry>
       </file>
-      <file leaf-file-name="conf.yaml" pinned="false" current-in-tab="true">
+      <file leaf-file-name="conf.yaml" pinned="false" current-in-tab="false">
         <entry file="file://$PROJECT_DIR$/conf.yaml">
           <provider selected="true" editor-type-id="text-editor">
             <state relative-caret-position="487">
               <caret line="41" column="21" lean-forward="true" selection-start-line="41" selection-start-column="21" selection-end-line="41" selection-end-column="21" />
+              <folding />
+            </state>
+          </provider>
+        </entry>
+      </file>
+      <file leaf-file-name="kill_by_port.sh" pinned="false" current-in-tab="true">
+        <entry file="file://$PROJECT_DIR$/kill_by_port.sh">
+          <provider selected="true" editor-type-id="text-editor">
+            <state relative-caret-position="105">
+              <caret line="7" column="4" lean-forward="true" selection-start-line="7" selection-start-column="4" selection-end-line="7" selection-end-column="4" />
               <folding />
             </state>
           </provider>
@@ -172,6 +176,7 @@
         <option value="$PROJECT_DIR$/CONSTANTS.py" />
         <option value="$PROJECT_DIR$/node.py" />
         <option value="$PROJECT_DIR$/conf.yaml" />
+        <option value="$PROJECT_DIR$/kill_by_port.sh" />
       </list>
     </option>
   </component>
@@ -500,7 +505,14 @@
       <option name="project" value="LOCAL" />
       <updated>1489207015389</updated>
     </task>
-    <option name="localTasksCounter" value="13" />
+    <task id="LOCAL-00013" summary="Runnable">
+      <created>1489283825028</created>
+      <option name="number" value="00013" />
+      <option name="presentableId" value="LOCAL-00013" />
+      <option name="project" value="LOCAL" />
+      <updated>1489283825028</updated>
+    </task>
+    <option name="localTasksCounter" value="14" />
     <servers />
   </component>
   <component name="TodoView">
@@ -549,7 +561,8 @@
     <MESSAGE value="Separated pending window" />
     <MESSAGE value="Refactored InputQueue to namedtuple" />
     <MESSAGE value="Debugging" />
-    <option name="LAST_COMMIT_MESSAGE" value="Debugging" />
+    <MESSAGE value="Runnable" />
+    <option name="LAST_COMMIT_MESSAGE" value="Runnable" />
   </component>
   <component name="XDebuggerManager">
     <breakpoint-manager>
@@ -987,6 +1000,14 @@
       <provider selected="true" editor-type-id="text-editor">
         <state relative-caret-position="487">
           <caret line="41" column="21" lean-forward="true" selection-start-line="41" selection-start-column="21" selection-end-line="41" selection-end-column="21" />
+          <folding />
+        </state>
+      </provider>
+    </entry>
+    <entry file="file://$PROJECT_DIR$/kill_by_port.sh">
+      <provider selected="true" editor-type-id="text-editor">
+        <state relative-caret-position="105">
+          <caret line="7" column="4" lean-forward="true" selection-start-line="7" selection-start-column="4" selection-end-line="7" selection-end-column="4" />
           <folding />
         </state>
       </provider>
