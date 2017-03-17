@@ -274,7 +274,7 @@ class Bolt(Node):
             data = pickle.loads(conn.recv(CONSTANTS.TCP_BUFFER_SIZE))
 
             assert data and isinstance(data, list) and isinstance(data[0], Tuple)
-            # put the tuple list into according buffer for later handling
+            # put the tuple list into the according buffer for later handling
             for t in data:
                 self.input_queues[t.sent_from]['queue'].put(t, block=True)
 
