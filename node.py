@@ -3,6 +3,7 @@
 import CONSTANTS
 from tuple import *
 from pending_window import *
+from utility.test_timer import *
 
 import logging
 import os
@@ -16,7 +17,7 @@ from collections import namedtuple
 
 
 logging.basicConfig(
-    level=logging.DEBUG,
+    level=logging.INFO,
     format='%(asctime)s %(levelname)s %(name)s %(threadName)-10s %(message)s',
     # Separate logs by each instance starting
     # filename='log.' + str(int(time.time())),
@@ -49,8 +50,13 @@ class Node(object):
 
     def prepare(self):
         """Operate before each running
+            and some info should be reset before each run
             because some things can't be pickled, of course
         """
+        self.last_run_state = max(map(int, os.listdir(self.node_backup_dir)) or [-1])
+
+        self.test_timer = TestTimer(self)
+        thread.start_new_thread(self.test_timer.run, ())
 
         self.LOGGER = logging.getLogger('Node %d' % self.node_id)
 
@@ -63,6 +69,8 @@ class Node(object):
         if msg in (None, []):
             return
 
+        time.sleep(CONSTANTS.LINK_DELAY)
+
         # modify sent_from field
         if isinstance(msg, VersionAck):
             msg.sent_from = self.node_id
@@ -74,11 +82,11 @@ class Node(object):
         for n in group:
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             try:
-                self.LOGGER.debug('connecting to node %d from node %d' % (n, self.node_id))
+                # self.LOGGER.debug('connecting to node %d from node %d' % (n, self.node_id))
                 sock.connect(('localhost', CONSTANTS.PORT_BASE + n))
                 # TODO: non-blocking?
                 sock.sendall(pickle.dumps(msg))
-                self.LOGGER.debug('sent to node %d from node %d' % (n, self.node_id))
+                # self.LOGGER.debug('sent to node %d from node %d' % (n, self.node_id))
             except socket.error, e:
                 self.LOGGER.error(e)
             finally:
@@ -94,33 +102,37 @@ class Spout(Node):
     """Source node with connecting node features
     """
 
-    def __init__(self, node_id, type, downstream_nodes, downstream_connectors, delay, barrier_interval, computing_state=0):
+    def __init__(self, node_id, type, downstream_nodes, downstream_connectors, computing_state=0):
         super(Spout, self).__init__(node_id, type, computing_state)
 
         self.downstream_nodes = downstream_nodes
         self.downstream_connectors = downstream_connectors
-        self.delay = delay
-        self.barrier_interval = barrier_interval
 
         self.pending_window_backup_dir = os.path.join(self.backup_dir, 'pending_window')
         self.pending_window = PendingWindow(self.pending_window_backup_dir, self)
 
     def gen_tuple(self):
+        self.test_timer.start_new = time.time()
+
         # step from the last computing state
         i = self.computing_state + 1
         while True:
-            if i % self.barrier_interval == 0:
+            if i % CONSTANTS.BARRIER_INTERVAL == 0:
                 output = [BarrierTuple(i, self.node_id, i)]
                 self.checkpoint_version(i)
             else:
                 output = [Tuple(i, self.node_id)]
                 self.computing_state = i
 
+            tick = time.time()
             self.pending_window.extend(output)
+            tock = time.time()
+            self.test_timer.pending_window_write += tock - tick
+
             self.multicast(self.downstream_nodes, output)
             self.tuple_handling_state = i
 
-            time.sleep(self.delay)
+            time.sleep(CONSTANTS.NODE_DELAY)
             i += 1
 
     def serve_inbound_connection(self):
@@ -130,7 +142,10 @@ class Spout(Node):
 
             if isinstance(data, VersionAck):
                 # TODO: add buffer and threading
+                tick = time.time()
                 self.pending_window.handle_version_ack(data)
+                tock = time.time()
+                self.test_timer.pending_window_handle_ack += tock - tick
             else:
                 self.LOGGER.warn('received unknown data type %s' % type(data))
 
@@ -190,11 +205,21 @@ class Bolt(Node):
     def handle_tuple(self, tuple_):
         """General method to handle any received tuple, including sending out if applicable
         """
+        if self.test_timer.start_new == None and tuple_.tuple_id > self.last_run_state:
+            self.test_timer.start_new = time.time()
+
+        time.sleep(CONSTANTS.NODE_DELAY)
 
         if isinstance(tuple_, BarrierTuple):
+            tick = time.time()
             self.handle_barrier(tuple_)
+            tock = time.time()
+            self.test_timer.handle_barrier += tock - tick
         else:
+            tick = time.time()
             self.handle_normal_tuple(tuple_)
+            tock = time.time()
+            self.test_timer.handle_normal += tock - tick
 
         self.tuple_handling_state = tuple_.tuple_id
 
@@ -246,7 +271,6 @@ class Bolt(Node):
     def serve_inbound_connection(self):
         while True:
             conn, client = self.sock.accept()
-            time.sleep(CONSTANTS.LINK_DELAY)
             data = pickle.loads(conn.recv(CONSTANTS.TCP_BUFFER_SIZE))
 
             assert data and isinstance(data, list) and isinstance(data[0], Tuple)
@@ -286,29 +310,35 @@ class Connector(Bolt):
         output = super(Connector, self).handle_normal_tuple(tuple_)
 
         if self.type != 'sink' or self.rule == 'print and store':
+            tick = time.time()
             self.pending_window.extend(output)
+            tock = time.time()
+            self.test_timer.pending_window_write += tock - tick
 
     def handle_barrier(self, barrier):
         is_version = super(Connector, self).handle_barrier(barrier)
 
         if is_version:
             if self.type != 'sink':
+                tick = time.time()
                 self.pending_window.append(barrier)
+                tock = time.time()
+                self.test_timer.pending_window_write += tock - tick
             self.ack_version(barrier.version)
 
     def serve_inbound_connection(self):
         while True:
             conn, client = self.sock.accept()
-
-            time.sleep(CONSTANTS.LINK_DELAY)
-
             data = pickle.loads(conn.recv(CONSTANTS.TCP_BUFFER_SIZE))
 
-            self.LOGGER.debug('received data')
+            # self.LOGGER.debug('received data')
 
             if isinstance(data, VersionAck):
                 # TODO: add buffer and threading
+                tick = time.time()
                 self.pending_window.handle_version_ack(data)
+                tock = time.time()
+                self.test_timer.pending_window_handle_ack += tock - tick
             elif isinstance(data, list):
                 assert data and isinstance(data[0], Tuple)
                 for t in data:

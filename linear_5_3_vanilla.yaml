@@ -1,0 +1,52 @@
+1:
+    type: spout
+    delay: 1 # seconds
+    barrier_interval: 10
+    downstream_nodes:
+        - 2
+    downstream_connectors:
+        - 3
+    is_connecting: True
+    cover:
+        - 1
+        - 2
+        - 3
+2:
+    type: filter
+    rule: 'lambda t: True'
+    upstream_nodes:
+        - 1
+    downstream_nodes:
+        - 3
+    is_connecting: False
+3:
+    type: filter
+    rule: 'lambda t: True'
+    upstream_nodes:
+        - 2
+    downstream_nodes:
+        - 4
+    is_connecting: True
+    upstream_connectors:
+        - 1
+    downstream_connectors:
+        - 5
+    cover:
+        - 4
+        - 5
+4:
+    type: filter
+    rule: 'lambda t: True'
+    upstream_nodes:
+        - 3
+    downstream_nodes:
+        - 5
+    is_connecting: False
+5:
+    type: sink
+    rule: 'print and store'
+    upstream_nodes:
+        - 4
+    is_connecting: True
+    upstream_connectors:
+        - 3

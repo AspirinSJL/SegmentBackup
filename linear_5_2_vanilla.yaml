@@ -13,7 +13,7 @@
         - 3
 2:
     type: filter
-    rule: 'lambda t: t.tuple_id % 2 == 0'
+    rule: 'lambda t: True'
     upstream_nodes:
         - 1
     downstream_nodes:
@@ -21,22 +21,15 @@
     is_connecting: False
 3:
     type: filter
-    rule: 'lambda t: t.tuple_id % 4 == 0'
+    rule: 'lambda t: True'
     upstream_nodes:
         - 2
     downstream_nodes:
         - 4
-    is_connecting: True
-    upstream_connectors:
-        - 1
-    downstream_connectors:
-        - 5
-    cover:
-        - 4
-        - 5
+    is_connecting: False
 4:
     type: filter
-    rule: 'lambda t: t.tuple_id % 8 == 0'
+    rule: 'lambda t: True'
     upstream_nodes:
         - 3
     downstream_nodes:

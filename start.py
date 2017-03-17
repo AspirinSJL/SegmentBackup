@@ -14,7 +14,7 @@ from optparse import OptionParser
 
 
 logging.basicConfig(
-    level=logging.DEBUG,
+    level=logging.INFO,
     format='%(asctime)s %(levelname)s %(threadName)-10s %(message)s',
     # Separate logs by each instance starting
     # filename='log.' + str(int(time.time())),
@@ -51,8 +51,8 @@ class AppStarter(object):
 
         for n_id, n_info in self.conf.iteritems():
             if n_info['type'] == 'spout':
-                node = Spout(n_id, n_info['type'], n_info['downstream_nodes'], n_info['downstream_connectors'],
-                             n_info['delay'], n_info['barrier_interval'])
+
+                node = Spout(n_id, n_info['type'], n_info['downstream_nodes'], n_info['downstream_connectors'])
             else:
                 if n_info['type'] == 'sink' or n_info['is_connecting']:
                     node = Connector(n_id, n_info['type'], n_info['rule'],
@@ -130,7 +130,7 @@ if __name__ == '__main__':
     parser.add_option('-m', '--mode', action='store', dest='start_mode', default='new',
                       help='new or restart')
     parser.add_option('-f', '--file', action='store', dest='conf_file',
-                      default=os.path.join(CONSTANTS.ROOT_DIR, 'conf.yaml'))
+                      default=os.path.join(CONSTANTS.ROOT_DIR, 'linear_5_3_vanilla.yaml'))
 
     (options, args) = parser.parse_args()
     # if len(options) < 1:
