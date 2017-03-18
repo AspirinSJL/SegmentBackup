@@ -36,7 +36,7 @@ class PendingWindow(object):
         # self.current_file = open(os.path.join(self.backup_dir, 'current'), 'wb')
 
         # the version that last truncation conducted against
-        with open(os.path.join(self.backup_dir, 'safe_version'), 'w') as f:
+        with self.hdfs_client.write(os.path.join(self.backup_dir, 'safe_version')) as f:
             f.write(str(0))
 
         if self.node.type != 'sink':
