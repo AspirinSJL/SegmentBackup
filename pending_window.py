@@ -4,6 +4,7 @@ import os
 import logging
 import cPickle as pickle
 from collections import deque
+from hdfs import Config
 
 
 logging.basicConfig(
@@ -20,12 +21,14 @@ LOGGER = logging.getLogger('Pending Window')
 class PendingWindow(object):
     """docstring for PendingWindow"""
     def __init__(self, backup_dir, node):
+        self.hdfs_client = Config().get_client('dev')
+
         # TODO: not cut
         # each pending window (or node) only has a single downstream cut,
         # otherwise inconsistency occurs during truncating
 
         self.backup_dir = backup_dir
-        os.mkdir(self.backup_dir)
+        self.hdfs_client.makedirs(self.backup_dir)
 
         self.node = node
 
