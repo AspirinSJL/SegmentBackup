@@ -1,43 +1,32 @@
 from tuple import *
 
 import os
-import logging
 import cPickle as pickle
 from collections import deque
 from hdfs import Config
 
-
-logging.basicConfig(
-    level=logging.DEBUG,
-    format='%(asctime)s %(levelname)s %(threadName)-10s %(message)s',
-    # Separate logs by each instance starting
-    # filename='log.' + str(int(time.time())),
-    # filemode='w',
-)
-
-LOGGER = logging.getLogger('Pending Window')
-
-
 class PendingWindow(object):
     """docstring for PendingWindow"""
     def __init__(self, backup_dir, node):
-        self.hdfs_client = Config().get_client('dev')
-
         # TODO: not cut
         # each pending window (or node) only has a single downstream cut,
         # otherwise inconsistency occurs during truncating
-
         self.backup_dir = backup_dir
-        self.hdfs_client.makedirs(self.backup_dir)
-
         self.node = node
 
-        # # each backup file is named by the ending version, so the current writing one is named temporarily
-        # self.current_file = open(os.path.join(self.backup_dir, 'current'), 'wb')
+        self.hdfs_client = Config().get_client('dev')
+
+        self.hdfs_client.makedirs(self.backup_dir)
+
+        # each backup file is named by the ending version, so the current writing one is named temporarily
+        self.current_backup_path = os.path.join(self.backup_dir, 'current')
+        # touch the file for later appending
+        self.hdfs_client.write(self.current_backup_path, data='')
 
         # the version that last truncation conducted against
-        with open(os.path.join(self.backup_dir, 'safe_version'), 'w') as f:
-            f.write(str(0))
+        self.safe_version_path = os.path.join(self.backup_dir, 'safe_version')
+        # special case for initial version
+        self.hdfs_client.write(self.safe_version_path, data=str(0))
 
         if self.node.type != 'sink':
             self.version_acks = dict()
@@ -48,19 +37,11 @@ class PendingWindow(object):
         """Make an output tuple persistent, and complete a version if necessary
         """
 
-        # for atomicity
-        with open(os.path.join(self.backup_dir, 'temp'), 'wb') as f:
-            pickle.dump(tuple_, f)
+        self.hdfs_client.write(self.current_backup_path, data=pickle.dumps(tuple_), append=True)
 
-        os.rename(os.path.join(self.backup_dir, 'temp'),
-                  os.path.join(self.backup_dir, str(tuple_.tuple_id)))
-
-        # if isinstance(tuple_, BarrierTuple):
-        #     self.current_file.close()
-        #     os.rename(os.path.join(self.backup_dir, 'current'),
-        #         os.path.join(self.backup_dir, str(tuple_.version)))
-        #
-        #     self.current_file = open(os.path.join(self.backup_dir, 'current'), 'wb')
+        if isinstance(tuple_, BarrierTuple):
+            self.hdfs_client.rename(self.current_backup_path, os.path.join(self.backup_dir, str(tuple_.version)))
+            self.hdfs_client.write(self.current_backup_path, data='')
 
     def extend(self, tuples):
         # TODO: can be improved
@@ -71,15 +52,11 @@ class PendingWindow(object):
         """Delete files with filename <= version
         """
 
-        with open(os.path.join(self.backup_dir, 'safe_version'), 'w') as f:
-            # f.seek(0)
-            f.write(str(version))
-            # # note that this 'truncate()' means differently in Python from our definition
-            # self.safe_version_file.truncate()
+        self.hdfs_client.write(self.safe_version_path, data=str(version), overwrite=True)
 
-        for f in os.listdir(self.backup_dir):
+        for f in self.hdfs_client.list(self.backup_dir):
             if f.isdigit() and int(f) <= version:
-                os.remove(os.path.join(self.backup_dir, f))
+                self.hdfs_client.delete(os.path.join(self.backup_dir, f))
 
     def handle_version_ack(self, version_ack):
         self.version_acks[version_ack.sent_from].append(version_ack.version)
@@ -91,28 +68,30 @@ class PendingWindow(object):
                 q.popleft()
 
     def rewind(self, version):
-        """Delete files with filename > version
+        """Delete files with filename > version (including current file)
         """
 
-        for f in os.listdir(self.backup_dir):
-            if f != 'safe_version' and (f == 'temp' or int(f) > version):
-                os.remove(os.path.join(self.backup_dir, f))
+        for f in self.hdfs_client.list(self.backup_dir):
+            if f.isdigit() and int(f) > version:
+                self.hdfs_client.delete(os.path.join(self.backup_dir, f))
 
-        # self.current_file = open(os.path.join(self.backup_dir, 'current'), 'w')
+        self.hdfs_client.write(self.current_backup_path, data='', overwrite=True)
 
     def replay(self):
         """When both the node and pending window state are ready, replay the pending window before resuming
         """
 
-        tuples = []
-        for t_id in sorted(filter(str.isdigit, os.listdir(self.backup_dir))):
-            with open(os.path.join(self.backup_dir, t_id), 'rb') as f:
-                # TODO: incomplete writing when compacted
-                try:
-                    t = pickle.load(f)
-                    tuples.append(t)
-                except pickle.UnpicklingError:
-                    print 'unpickle end'
-                    break
-
-        self.node.multicast(self.node.downstream_nodes, tuples)
+        for v in sorted(map(str, filter(unicode.isdigit, self.hdfs_client.list(self.backup_dir)))):
+            tuples = []
+            with self.hdfs_client.read(os.path.join(self.backup_dir, str(v))) as f:
+                while True:
+                    try:
+                        t = pickle.load(f)
+                        tuples.append(t)
+                    except EOFError:
+                        self.node.LOGGER.debug('reached EOF, send this version')
+                        break
+                    except pickle.UnpickleableError:
+                        self.node.LOGGER.debug('spout reached partial dump location, send this incomplete version')
+                        break
+                self.node.multicast(self.node.downstream_nodes, tuples)

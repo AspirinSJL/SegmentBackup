@@ -6,7 +6,6 @@
         - 3
     is_connecting: True
     cover:
-        - 1
         - 2
         - 3
 2:

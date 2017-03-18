@@ -15,5 +15,5 @@ LINK_DELAY = 0.5
 # processing delay for each tuple
 NODE_DELAY = 0.1
 # number interval between two consecutive barriers
-BARRIER_INTERVAL = 50
-TIMER_INTERVAL = 10
+BARRIER_INTERVAL = 25
+TIMER_INTERVAL = 100

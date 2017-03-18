@@ -12,8 +12,7 @@ import thread
 import Queue
 import socket
 import pickle
-import json
-from collections import namedtuple
+import hdfs
 
 
 logging.basicConfig(
@@ -41,19 +40,26 @@ class Node(object):
         # update after handling (creating if Spout) each BarrierTuple
         self.latest_checked_version = None
 
+        self.hdfs_client = hdfs.Config().get_client('dev')
+
+
         # create backup directories
         # TODO: parent dir should be an argument
-        self.backup_dir = os.path.join(CONSTANTS.ROOT_DIR, 'backup', str(node_id))
+        self.backup_dir = os.path.join('backup', str(node_id))
         self.node_backup_dir = os.path.join(self.backup_dir, 'node')
         for d in (self.backup_dir, self.node_backup_dir):
-            os.makedirs(d)
+            self.hdfs_client.makedirs(d)
 
     def prepare(self):
         """Operate before each running
             and some info should be reset before each run
             because some things can't be pickled, of course
         """
-        self.last_run_state = max(map(int, os.listdir(self.node_backup_dir)) or [-1])
+
+        logging.getLogger('hdfs.client').setLevel(logging.WARNING)
+
+        # for measuring the delay before processing new tuples
+        self.last_run_state = max(map(int, self.hdfs_client.list(self.node_backup_dir)) or [0])
 
         self.test_timer = TestTimer(self)
         thread.start_new_thread(self.test_timer.run, ())
@@ -94,7 +100,8 @@ class Node(object):
 
     def checkpoint_version(self, version):
         # touch a file
-        open(os.path.join(self.node_backup_dir, str(version)), 'w').close()
+        # TODO: change overwrite to rewind
+        self.hdfs_client.write(os.path.join(self.node_backup_dir, str(version)), data='', overwrite=True)
         self.latest_checked_version = version
 
 
@@ -319,11 +326,11 @@ class Connector(Bolt):
         is_version = super(Connector, self).handle_barrier(barrier)
 
         if is_version:
-            if self.type != 'sink':
-                tick = time.time()
-                self.pending_window.append(barrier)
-                tock = time.time()
-                self.test_timer.pending_window_write += tock - tick
+            tick = time.time()
+            self.pending_window.append(barrier)
+            tock = time.time()
+            self.test_timer.pending_window_write += tock - tick
+
             self.ack_version(barrier.version)
 
     def serve_inbound_connection(self):

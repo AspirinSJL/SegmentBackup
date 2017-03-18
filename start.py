@@ -9,6 +9,7 @@ import shutil
 import time
 import yaml
 import pickle
+import hdfs
 from subprocess import Popen
 from optparse import OptionParser
 
@@ -22,7 +23,7 @@ logging.basicConfig(
 )
 
 LOGGER = logging.getLogger('Starter')
-
+logging.getLogger('hdfs.client').setLevel(logging.WARNING)
 
 class AppStarter(object):
     """Instantiated separately for start and restart
@@ -32,18 +33,20 @@ class AppStarter(object):
             self.conf = yaml.load(f)
         self.start_mode = start_mode
 
+        self.hdfs_client = hdfs.Config().get_client('dev')
+
         # Topo information
         # In production, it should be ready in any standby data-center for quick handing over
-        self.pickle_dir = os.path.join(CONSTANTS.ROOT_DIR, 'pickled_nodes')
+        self.pickle_dir = 'pickled_nodes'
+        self.pickle_dir_local = os.path.join(CONSTANTS.ROOT_DIR, 'pickled_nodes')
 
-        self.backup_dir = os.path.join(CONSTANTS.ROOT_DIR, 'backup')
+        self.backup_dir = 'backup'
 
         if start_mode == 'new':
             # create/overwrite these directories
             for d in (self.pickle_dir, self.backup_dir):
-                if os.path.exists(d):
-                    shutil.rmtree(d)
-                os.makedirs(d)
+                self.hdfs_client.delete(d, recursive=True)
+                self.hdfs_client.makedirs(d)
 
     def configure_nodes(self):
         """Turn the config into node instances, and pickle them for reuse
@@ -62,9 +65,8 @@ class AppStarter(object):
                     node = Bolt(n_id, n_info['type'], n_info['rule'],
                                 n_info['upstream_nodes'], n_info['downstream_nodes'])
 
-            with open(os.path.join(self.pickle_dir, '%d.pkl' % n_id), 'wb') as f:
-                pickle.dump(node, f, protocol=-1)
-                LOGGER.info('node %d pickled' % n_id)
+            self.hdfs_client.write(os.path.join(self.pickle_dir, '%d.pkl' % n_id), pickle.dumps(node, protocol=-1))
+            LOGGER.info('node %d pickled' % n_id)
 
     def recover_nodes(self):
         """Adjust the backup data (both pending window and node state) to the latest consistent state,
@@ -72,35 +74,51 @@ class AppStarter(object):
         """
         nodes = {}
         for n in self.conf:
-            with open(os.path.join(self.pickle_dir, '%d.pkl' % n), 'rb') as f:
+            with self.hdfs_client.read(os.path.join(self.pickle_dir, '%d.pkl' % n)) as f:
                 nodes[n] = pickle.load(f)
 
         # adjust state (should be BFS or DFS?)
         for c_id, c_info in self.conf.iteritems():
+            if c_info['type'] == 'spout':
+                all_versions = self.hdfs_client.list(os.path.join(self.backup_dir, str(c_id), 'node'))
+                latest_version = max(map(int, all_versions))
+
+                nodes[c_id].computing_state = latest_version
+                nodes[c_id].pending_window.rewind(latest_version)
+                LOGGER.info('spout reset (pwnd rewound) to latest version %d' % latest_version)
+
             # each connector should be responsible for make its downstream segment consistent
             # if multiple connectors converge to a single downstream connector, they should have agreement naturally
             # agreement should be achieved in lower level by some classical distributed algorithm
             if c_info['is_connecting'] and c_info['type'] != 'sink':
-                # TODO: no valid backup version
-                with open(os.path.join(self.backup_dir, str(c_id), 'pending_window', 'safe_version')) as f:
+                with self.hdfs_client.read(os.path.join(
+                        self.backup_dir, str(c_id), 'pending_window', 'safe_version')) as f:
                     # the tuples before (inclusively) safe version have been handled by downstream connectors
                     safe_version = int(f.read())
 
                 # 1. adjust node state
                 for n in c_info['cover']:
                     nodes[n].computing_state = safe_version
+                    LOGGER.info('node %d reset to version %d' % (n, safe_version))
 
                 # 2. adjust pending window state
                 for n in c_info['downstream_connectors']:
                     nodes[n].pending_window.rewind(safe_version)
+                    LOGGER.info('pwnd %d rewound to version %d' % (n, safe_version))
+
 
         for n in nodes:
-            with open(os.path.join(self.pickle_dir, '%d.pkl' % n), 'wb') as f:
-                pickle.dump(nodes[n], f, protocol=-1)
+            self.hdfs_client.write(
+                os.path.join(self.pickle_dir, '%d.pkl' % n),
+                data=pickle.dumps(nodes[n], protocol=-1),
+                overwrite=True)
+
 
     def start_nodes(self):
         """Load each pic_idled node and run it in a new process
         """
+
+        self.hdfs_client.download(self.pickle_dir, CONSTANTS.ROOT_DIR, overwrite=True)
 
         for n in reversed(self.conf.keys()):
             LOGGER.info('starting node %d' % n)
