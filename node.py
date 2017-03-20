@@ -3,7 +3,7 @@
 import CONSTANTS
 from tuple import *
 from pending_window import *
-from utility.test_timer import *
+from utility.auditor import *
 
 import logging
 import os
@@ -13,6 +13,7 @@ import Queue
 import socket
 import pickle
 import hdfs
+from sys import getsizeof
 
 
 logging.basicConfig(
@@ -42,7 +43,6 @@ class Node(object):
 
         self.hdfs_client = hdfs.Config().get_client('dev')
 
-
         # create backup directories
         # TODO: parent dir should be an argument
         self.backup_dir = os.path.join('backup', str(node_id))
@@ -61,8 +61,10 @@ class Node(object):
         # for measuring the delay before processing new tuples
         self.last_run_state = max(map(int, self.hdfs_client.list(self.node_backup_dir)) or [0])
 
-        self.test_timer = TestTimer(self)
-        thread.start_new_thread(self.test_timer.run, ())
+        self.time_auditor = TimeAuditor(self)
+        self.space_auditor = SpaceAuditor(self)
+        thread.start_new_thread(self.time_auditor.run, ())
+        thread.start_new_thread(self.space_auditor.run, ())
 
         self.LOGGER = logging.getLogger('Node %d' % self.node_id)
 
@@ -71,12 +73,18 @@ class Node(object):
         self.sock.bind(('localhost', CONSTANTS.PORT_BASE + self.node_id))
         self.sock.listen(2)
 
-    def multicast(self, group, msg):
+    def multicast(self, group, msg, is_audit_other=False):
         if msg in (None, []):
             return
 
-        time.sleep(CONSTANTS.LINK_DELAY)
-
+        # assume multicast infra
+        time.sleep(CONSTANTS.TRANSMIT_DELAY * getsizeof(msg) + CONSTANTS.PROPAGATE_DELAY)
+        
+        if is_audit_other:
+            self.space_auditor.network_other += getsizeof(msg)
+        else:
+            self.space_auditor.network_normal += getsizeof(msg)
+        
         # modify sent_from field
         if isinstance(msg, VersionAck):
             msg.sent_from = self.node_id
@@ -119,7 +127,7 @@ class Spout(Node):
         self.pending_window = PendingWindow(self.pending_window_backup_dir, self)
 
     def gen_tuple(self):
-        self.test_timer.start_new = time.time()
+        self.time_auditor.start_new = time.time()
 
         # step from the last computing state
         i = self.computing_state + 1
@@ -134,12 +142,12 @@ class Spout(Node):
             tick = time.time()
             self.pending_window.extend(output)
             tock = time.time()
-            self.test_timer.pending_window_write += tock - tick
+            self.time_auditor.pending_window_write += tock - tick
 
-            self.multicast(self.downstream_nodes, output)
+            self.multicast(self.downstream_nodes, output, is_audit_other=(i % CONSTANTS.BARRIER_INTERVAL == 0))
             self.tuple_handling_state = i
 
-            time.sleep(CONSTANTS.NODE_DELAY)
+            time.sleep(CONSTANTS.GEN_DELAY)
             i += 1
 
     def serve_inbound_connection(self):
@@ -152,7 +160,7 @@ class Spout(Node):
                 tick = time.time()
                 self.pending_window.handle_version_ack(data)
                 tock = time.time()
-                self.test_timer.pending_window_handle_ack += tock - tick
+                self.time_auditor.pending_window_handle_ack += tock - tick
             else:
                 self.LOGGER.warn('received unknown data type %s' % type(data))
 
@@ -212,21 +220,21 @@ class Bolt(Node):
     def handle_tuple(self, tuple_):
         """General method to handle any received tuple, including sending out if applicable
         """
-        if self.test_timer.start_new == None and tuple_.tuple_id > self.last_run_state:
-            self.test_timer.start_new = time.time()
+        if self.time_auditor.start_new == None and tuple_.tuple_id > self.last_run_state:
+            self.time_auditor.start_new = time.time()
 
-        time.sleep(CONSTANTS.NODE_DELAY)
+        time.sleep(CONSTANTS.COMPUTING_DELAY)
 
         if isinstance(tuple_, BarrierTuple):
             tick = time.time()
             self.handle_barrier(tuple_)
             tock = time.time()
-            self.test_timer.handle_barrier += tock - tick
+            self.time_auditor.handle_barrier += tock - tick
         else:
             tick = time.time()
             self.handle_normal_tuple(tuple_)
             tock = time.time()
-            self.test_timer.handle_normal += tock - tick
+            self.time_auditor.handle_normal += tock - tick
 
         self.tuple_handling_state = tuple_.tuple_id
 
@@ -251,7 +259,7 @@ class Bolt(Node):
 
             # can relay the barrier now
             if self.type != 'sink':
-                self.multicast(self.downstream_nodes, [barrier])
+                self.multicast(self.downstream_nodes, [barrier], is_audit_other=True)
 
             # open all the channels after each checkpoint
             for n in self.upstream_nodes:
@@ -311,7 +319,7 @@ class Connector(Bolt):
 
     def ack_version(self, version):
         # TODO: multiple upstream cuts should be valid too
-        self.multicast(self.upstream_connectors, VersionAck(self.node_id, version))
+        self.multicast(self.upstream_connectors, VersionAck(self.node_id, version), is_audit_other=True)
 
     def handle_normal_tuple(self, tuple_):
         output = super(Connector, self).handle_normal_tuple(tuple_)
@@ -320,7 +328,7 @@ class Connector(Bolt):
             tick = time.time()
             self.pending_window.extend(output)
             tock = time.time()
-            self.test_timer.pending_window_write += tock - tick
+            self.time_auditor.pending_window_write += tock - tick
 
     def handle_barrier(self, barrier):
         is_version = super(Connector, self).handle_barrier(barrier)
@@ -329,7 +337,7 @@ class Connector(Bolt):
             tick = time.time()
             self.pending_window.append(barrier)
             tock = time.time()
-            self.test_timer.pending_window_write += tock - tick
+            self.time_auditor.pending_window_write += tock - tick
 
             self.ack_version(barrier.version)
 
@@ -345,7 +353,7 @@ class Connector(Bolt):
                 tick = time.time()
                 self.pending_window.handle_version_ack(data)
                 tock = time.time()
-                self.test_timer.pending_window_handle_ack += tock - tick
+                self.time_auditor.pending_window_handle_ack += tock - tick
             elif isinstance(data, list):
                 assert data and isinstance(data[0], Tuple)
                 for t in data:
