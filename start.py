@@ -97,7 +97,7 @@ class AppStarter(object):
                         nodes[n].restore(latest_version)
                         LOGGER.info('node %d restored to version %d' % (n, latest_version))
 
-                    # ensure latest acks are received
+                    # ensure latest acks are received a
                     # if latest_version > 0:
                     for n in c_info['upstream_connectors']:
                         nodes[n].pending_window.handle_version_ack(VersionAck(c_id, latest_version))
