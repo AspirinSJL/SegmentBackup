@@ -81,46 +81,26 @@ class AppStarter(object):
             with self.hdfs_client.read(os.path.join(self.pickle_dir, '%d.pkl' % n)) as f:
                 nodes[n] = pickle.load(f)
 
-        # complete unfinished acks, also avoid slower node in new run to drag
+        # adjust state (each connector is independent)
         for c_id, c_info in self.conf.iteritems():
-            if c_info['is_connecting'] and c_info['type'] != 'spout':
-                all_versions = self.hdfs_client.list(os.path.join(self.backup_dir, str(c_id), 'node'))
-                latest_version = max(int(f) for f in all_versions if f.isdigit() or [])
+            if c_info['is_connecting']:
+                latest_version = nodes[c_id].get_latest_version()
 
-                if latest_version > 0:
+                nodes[c_id].restore(latest_version)
+                LOGGER.info('node %d restored to version %d' % (c_id, latest_version))
+                nodes[c_id].pending_window.rewind(latest_version)
+                LOGGER.info('pwnd %d rewound to version %d' % (c_id, latest_version))
+
+                # each connector is responsible for upper bolts' states
+                if c_info['type'] != 'spout':
+                    for n in c_info['cover']:
+                        nodes[n].restore(latest_version)
+                        LOGGER.info('node %d restored to version %d' % (n, latest_version))
+
+                    # ensure latest acks are received
+                    # if latest_version > 0:
                     for n in c_info['upstream_connectors']:
                         nodes[n].pending_window.handle_version_ack(VersionAck(c_id, latest_version))
-
-        # adjust state (should be BFS or DFS?)
-        for c_id, c_info in self.conf.iteritems():
-            if c_info['type'] == 'spout':
-                # pending window is later than node
-                all_versions = self.hdfs_client.list(os.path.join(self.backup_dir, str(c_id), 'pending_window'))
-                latest_version = max(int(f) for f in all_versions if f.isdigit())
-
-                nodes[c_id].computing_state = latest_version
-                nodes[c_id].pending_window.rewind(latest_version)
-                LOGGER.info('spout reset (pwnd rewound) to latest version %d' % latest_version)
-
-            # each connector should be responsible for make its downstream segment consistent
-            # if multiple connectors converge to a single downstream connector, they should have agreement naturally
-            # agreement should be achieved in lower level by some classical distributed algorithm
-            if c_info['is_connecting'] and c_info['type'] != 'sink':
-                with self.hdfs_client.read(os.path.join(
-                        self.backup_dir, str(c_id), 'pending_window', 'safe_version')) as f:
-                    # the tuples before (inclusively) safe version have been handled by downstream connectors
-                    safe_version = int(f.read())
-
-                # 1. adjust node state
-                for n in c_info['cover']:
-                    nodes[n].computing_state = safe_version
-                    LOGGER.info('node %d reset to version %d' % (n, safe_version))
-
-                # 2. adjust pending window state
-                for n in c_info['downstream_connectors']:
-                    nodes[n].pending_window.rewind(safe_version)
-                    LOGGER.info('pwnd %d rewound to version %d' % (n, safe_version))
-
 
         for n in nodes:
             self.hdfs_client.write(

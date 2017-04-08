@@ -49,6 +49,9 @@ class Node(object):
         self.backup_dir = os.path.join('backup', str(node_id))
         self.node_backup_dir = os.path.join(self.backup_dir, 'node')
 
+        self.node_latest_version_path = os.path.join(self.node_backup_dir, 'latest_version')
+        self.hdfs_client.write(self.node_latest_version_path, data=str(self.computing_state))
+
         self.computing_state_dir = 'computing_state'
 
         for d in (self.backup_dir, self.node_backup_dir):
@@ -153,8 +156,9 @@ class Node(object):
 
     def checkpoint_version(self, version):
         # touch a file
-        # TODO: change overwrite to rewind
+        # TODO: change overwrite to rewind. needn't overwrite after change
         self.hdfs_client.write(os.path.join(self.node_backup_dir, str(version)), data='', overwrite=True)
+        self.hdfs_client.write(self.node_latest_version_path, data=str(version), overwrite=True)
         self.latest_checked_version = version
 
     def update_computing_state(self, state):
@@ -164,6 +168,20 @@ class Node(object):
 
         self.computing_state = state
 
+    def get_latest_version(self):
+        with self.hdfs_client.read(self.node_latest_version_path) as f:
+            latest_version = int(f.read())
+
+        return latest_version
+
+    def restore(self, version):
+        self.computing_state = version
+
+        for f in self.hdfs_client.list(self.node_backup_dir):
+            if f.isdigit() and int(f) > version:
+                self.hdfs_client.delete(os.path.join(self.node_backup_dir, f))
+
+        self.hdfs_client.write(self.node_latest_version_path, data=str(version), overwrite=True)
 
 class Spout(Node):
     """Source node with connecting node features
@@ -386,6 +404,12 @@ class Connector(Bolt):
         self.multicast(self.upstream_connectors, VersionAck(self.node_id, version), is_audit_other=True)
         # self.output_queue.put((self.upstream_connectors, VersionAck(self.node_id, version)))
         # self.LOGGER.info('acked version %d' % version)
+
+    def get_latest_version(self):
+        latest_node_version = super(Connector, self).get_latest_version()
+        latest_pw_version = self.pending_window.get_latest_version()
+
+        return min(latest_node_version, latest_pw_version)
 
     def handle_output_batch(self, output_batch):
         tick = time.time()

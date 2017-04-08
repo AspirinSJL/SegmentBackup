@@ -28,10 +28,15 @@ class PendingWindow(object):
         # special case for initial version
         self.hdfs_client.write(self.safe_version_path, data=str(0))
 
+        # the latest integral version
+        self.latest_version_path = os.path.join(self.backup_dir, 'latest_version')
+        # special case for initial version
+        self.hdfs_client.write(self.latest_version_path, data=str(0))
+
         if self.node.type != 'sink':
             self.version_acks = dict()
             for n in self.node.downstream_connectors:
-                self.version_acks[n] = deque()
+                self.version_acks[n] = 0
 
     def append(self, tuple_):
         """Make an output tuple persistent, and complete a version if necessary
@@ -41,6 +46,7 @@ class PendingWindow(object):
 
         if isinstance(tuple_, BarrierTuple):
             self.hdfs_client.rename(self.current_backup_path, os.path.join(self.backup_dir, str(tuple_.version)))
+            self.hdfs_client.write(self.latest_version_path, data=str(tuple_.version), overwrite=True)
             self.hdfs_client.write(self.current_backup_path, data='')
 
     def extend(self, tuples):
@@ -51,11 +57,18 @@ class PendingWindow(object):
 
         if isinstance(tuples[-1], BarrierTuple):
             self.hdfs_client.rename(self.current_backup_path, os.path.join(self.backup_dir, str(tuples[-1].version)))
+            self.hdfs_client.write(self.latest_version_path, data=str(tuples[-1].version), overwrite=True)
             self.hdfs_client.write(self.current_backup_path, data='')
 
     def truncate(self, version):
         """Delete files with filename <= version
         """
+        with self.hdfs_client.read(self.safe_version_path) as f:
+            safe_version = int(f.read())
+
+        # only = condition can occur
+        if version <= safe_version:
+            return
 
         self.hdfs_client.write(self.safe_version_path, data=str(version), overwrite=True)
 
@@ -66,13 +79,16 @@ class PendingWindow(object):
         # self.node.LOGGER.info('truncated version %d' % version)
 
     def handle_version_ack(self, version_ack):
-        self.version_acks[version_ack.sent_from].append(version_ack.version)
+        self.version_acks[version_ack.sent_from] = version_ack.version
 
-        if all(self.version_acks.values()) and len(set(map(lambda q: q[0], self.version_acks.values()))) == 1:
-            self.truncate(version_ack.version)
+        new_truncation = min(self.version_acks.values())
+        self.truncate(new_truncation)
 
-            for q in self.version_acks.values():
-                q.popleft()
+    def get_latest_version(self):
+        with self.hdfs_client.read(self.latest_version_path) as f:
+            latest_version = int(f.read())
+        return latest_version
+
 
     def rewind(self, version):
         """Delete files with filename > version (including current file)
@@ -88,7 +104,10 @@ class PendingWindow(object):
         """When both the node and pending window state are ready, replay the pending window before resuming
         """
 
-        for v in sorted(map(str, filter(unicode.isdigit, self.hdfs_client.list(self.backup_dir)))):
+        for v in sorted(map(int, filter(unicode.isdigit, self.hdfs_client.list(self.backup_dir)))):
+            # filter out the faster nodes
+            # TODO: only if this connector is spilitting
+            destination = [self.node.downstream_nodes[i] for i in xrange(len(self.node.downstream_connectors)) if self.version_acks[self.node.downstream_connectors[i]] < v]
             tuples = []
             with self.hdfs_client.read(os.path.join(self.backup_dir, str(v))) as f:
                 while True:
@@ -98,7 +117,8 @@ class PendingWindow(object):
                     except EOFError:
                         self.node.LOGGER.debug('reached EOF, send this version')
                         break
-                    except pickle.UnpickleableError:
-                        self.node.LOGGER.debug('spout reached partial dump location, send this incomplete version')
-                        break
-                self.node.multicast(self.node.downstream_nodes, tuples)
+                    # Spout needs version too, so that data source can resend from a version
+                    # except pickle.UnpickleableError:
+                    #     self.node.LOGGER.debug('spout reached partial dump location, send this incomplete version')
+                    #     break
+                self.node.multicast(destination, tuples)

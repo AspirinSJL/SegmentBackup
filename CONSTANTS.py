@@ -13,7 +13,7 @@ TCP_BUFFER_SIZE = 4096
 # M/M/1 queue arrival rate
 QUEUE_LAMB = 30
 # M/M/1 queue service rate
-QUEUE_MU = 200
+QUEUE_MU = 150
 
 # inter-node communication delay, T * size + P
 TRANSMIT_DELAY = 0.00
