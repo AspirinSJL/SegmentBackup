@@ -28,7 +28,7 @@ class TimeAuditor(object):
         handle barrier:   %f
         handle normal:    %f
         ''' % ('-' * 10 + str(self.node.node_id),
-               time.time() - self.start, self.start_new - self.start,
+               time.time() - self.start, self.start_new - self.start if self.start_new else -1,
                self.pending_window_write, self.pending_window_handle_ack,
                self.handle_barrier, self.handle_normal))
 
@@ -58,8 +58,12 @@ class SpaceAuditor(object):
 
             for k in self.hdfs_client.list(node_id):
                 for f in self.hdfs_client.list(os.path.join(node_id, k)):
-                    s = self.hdfs_client.status(os.path.join(node_id, k, f))
-                    total += s['length']
+                    try:
+                        s = self.hdfs_client.status(os.path.join(node_id, k, f))
+                        total += s['length']
+                    except hdfs.util.HdfsError:
+                        # TODO: miss a file
+                        pass
 
             return total
 

@@ -45,8 +45,13 @@ class PendingWindow(object):
 
     def extend(self, tuples):
         # TODO: can be improved
-        for t in tuples:
-            self.append(t)
+        with self.hdfs_client.write(self.current_backup_path, append=True) as f:
+            for t in tuples:
+                pickle.dump(t, f)
+
+        if isinstance(tuples[-1], BarrierTuple):
+            self.hdfs_client.rename(self.current_backup_path, os.path.join(self.backup_dir, str(tuples[-1].version)))
+            self.hdfs_client.write(self.current_backup_path, data='')
 
     def truncate(self, version):
         """Delete files with filename <= version
@@ -57,6 +62,8 @@ class PendingWindow(object):
         for f in self.hdfs_client.list(self.backup_dir):
             if f.isdigit() and int(f) <= version:
                 self.hdfs_client.delete(os.path.join(self.backup_dir, f))
+
+        # self.node.LOGGER.info('truncated version %d' % version)
 
     def handle_version_ack(self, version_ack):
         self.version_acks[version_ack.sent_from].append(version_ack.version)

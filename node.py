@@ -13,6 +13,7 @@ import Queue
 import socket
 import pickle
 import hdfs
+import random
 from sys import getsizeof
 
 
@@ -47,8 +48,13 @@ class Node(object):
         # TODO: parent dir should be an argument
         self.backup_dir = os.path.join('backup', str(node_id))
         self.node_backup_dir = os.path.join(self.backup_dir, 'node')
+
+        self.computing_state_dir = 'computing_state'
+
         for d in (self.backup_dir, self.node_backup_dir):
             self.hdfs_client.makedirs(d)
+
+        self.hdfs_client.write(os.path.join(self.computing_state_dir, '.'.join([str(self.node_id), str(0)])), data='')
 
     def prepare(self):
         """Operate before each running
@@ -59,7 +65,16 @@ class Node(object):
         logging.getLogger('hdfs.client').setLevel(logging.WARNING)
 
         # for measuring the delay before processing new tuples
-        self.last_run_state = max(map(int, self.hdfs_client.list(self.node_backup_dir)) or [0])
+        # self.last_run_state = max(map(int, self.hdfs_client.list(self.node_backup_dir)) or [0])
+        for f in self.hdfs_client.list(self.computing_state_dir):
+            if int(f.split('.')[0]) == self.node_id:
+                self.last_run_state = int(f.split('.')[1])
+
+                self.hdfs_client.rename(
+                    os.path.join(self.computing_state_dir, f),
+                    os.path.join(self.computing_state_dir, '.'.join([str(self.node_id), str(self.computing_state)])))
+
+                break
 
         self.time_auditor = TimeAuditor(self)
         self.space_auditor = SpaceAuditor(self)
@@ -68,22 +83,26 @@ class Node(object):
 
         self.LOGGER = logging.getLogger('Node %d' % self.node_id)
 
+        self.output_queue = Queue.Queue()
+
         # socket for passing tuple
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.sock.bind(('localhost', CONSTANTS.PORT_BASE + self.node_id))
         self.sock.listen(2)
 
+        self.LOGGER.info('node %d started with computing state %d' % (self.node_id, self. computing_state))
+
     def multicast(self, group, msg, is_audit_other=False):
         if msg in (None, []):
             return
-
         # assume multicast infra
-        time.sleep(CONSTANTS.TRANSMIT_DELAY * getsizeof(msg) + CONSTANTS.PROPAGATE_DELAY)
-        
-        if is_audit_other:
-            self.space_auditor.network_other += getsizeof(msg)
-        else:
-            self.space_auditor.network_normal += getsizeof(msg)
+        # time.sleep(CONSTANTS.TRANSMIT_DELAY * getsizeof(msg) + CONSTANTS.PROPAGATE_DELAY)
+
+        # TODO
+        # if is_audit_other:
+        #     self.space_auditor.network_other += getsizeof(msg)
+        # else:
+        #     self.space_auditor.network_normal += getsizeof(msg)
         
         # modify sent_from field
         if isinstance(msg, VersionAck):
@@ -106,11 +125,44 @@ class Node(object):
             finally:
                 sock.close()
 
+    def handle_output_batch(self, output_batch):
+        pass
+
+    def consume_output_queue(self):
+        # started = False
+        while True:
+            if not self.output_queue.empty():
+                # if not started:
+                #     time.sleep(CONSTANTS.PROPAGATE_DELAY)
+                #     started = True
+                # time.sleep(CONSTANTS.TRANSMIT_DELAY)
+
+                # batch process (maximum is a version)
+                output_batch = []
+                output_num = 0
+                while not self.output_queue.empty():
+                    output_batch.extend(self.output_queue.get())
+                    output_num += 1
+                    if isinstance(output_batch[-1], BarrierTuple):
+                        break
+
+                self.handle_output_batch(output_batch)
+                
+                for _ in xrange(output_num):
+                    self.output_queue.task_done()
+
     def checkpoint_version(self, version):
         # touch a file
         # TODO: change overwrite to rewind
         self.hdfs_client.write(os.path.join(self.node_backup_dir, str(version)), data='', overwrite=True)
         self.latest_checked_version = version
+
+    def update_computing_state(self, state):
+        self.hdfs_client.rename(
+            os.path.join(self.computing_state_dir, '.'.join([str(self.node_id), str(self.computing_state)])),
+            os.path.join(self.computing_state_dir, '.'.join([str(self.node_id), str(state)])))
+
+        self.computing_state = state
 
 
 class Spout(Node):
@@ -132,22 +184,21 @@ class Spout(Node):
         # step from the last computing state
         i = self.computing_state + 1
         while True:
+            inter_arrival_time = random.expovariate(CONSTANTS.QUEUE_LAMB)
+            time.sleep(inter_arrival_time)
+
             if i % CONSTANTS.BARRIER_INTERVAL == 0:
                 output = [BarrierTuple(i, self.node_id, i)]
                 self.checkpoint_version(i)
             else:
                 output = [Tuple(i, self.node_id)]
-                self.computing_state = i
 
-            tick = time.time()
-            self.pending_window.extend(output)
-            tock = time.time()
-            self.time_auditor.pending_window_write += tock - tick
+            self.update_computing_state(i)
 
-            self.multicast(self.downstream_nodes, output, is_audit_other=(i % CONSTANTS.BARRIER_INTERVAL == 0))
+            # self.multicast(self.downstream_nodes, output, is_audit_other=(i % CONSTANTS.BARRIER_INTERVAL == 0))
+            self.output_queue.put(output)
             self.tuple_handling_state = i
 
-            time.sleep(CONSTANTS.GEN_DELAY)
             i += 1
 
     def serve_inbound_connection(self):
@@ -164,6 +215,15 @@ class Spout(Node):
             else:
                 self.LOGGER.warn('received unknown data type %s' % type(data))
 
+    def handle_output_batch(self, output_batch):
+        tick = time.time()
+        self.pending_window.extend(output_batch)
+        tock = time.time()
+        self.time_auditor.pending_window_write += tock - tick
+
+        # TODO: audit class
+        self.multicast(self.downstream_nodes, output_batch)
+        
     def run(self, replay=False):
         self.prepare()
 
@@ -172,6 +232,7 @@ class Spout(Node):
 
         thread.start_new_thread(self.serve_inbound_connection, ())
         thread.start_new_thread(self.gen_tuple, ())
+        thread.start_new_thread(self.consume_output_queue, ())
 
         while True:
             pass
@@ -223,7 +284,8 @@ class Bolt(Node):
         if self.time_auditor.start_new == None and tuple_.tuple_id > self.last_run_state:
             self.time_auditor.start_new = time.time()
 
-        time.sleep(CONSTANTS.COMPUTING_DELAY)
+        service_time = random.expovariate(CONSTANTS.QUEUE_MU)
+        time.sleep(service_time)
 
         if isinstance(tuple_, BarrierTuple):
             tick = time.time()
@@ -240,14 +302,14 @@ class Bolt(Node):
 
     def handle_normal_tuple(self, tuple_):
         if self.type == 'sink' and self.rule == 'print and store':
-            self.computing_state = tuple_.tuple_id
-            return [tuple_]
+            output = [tuple_]
+            self.update_computing_state(tuple_.tuple_id)
         else:
             output = self.operator(tuple_)
-            self.computing_state = tuple_.tuple_id
+            self.update_computing_state(tuple_.tuple_id)
 
-            self.multicast(self.downstream_nodes, output)
-            return output
+        # self.multicast(self.downstream_nodes, output)
+        self.output_queue.put(output)
 
     def handle_barrier(self, barrier):
         """Return whether a version is completed
@@ -258,20 +320,17 @@ class Bolt(Node):
             self.checkpoint_version(barrier.version)
 
             # can relay the barrier now
-            if self.type != 'sink':
-                self.multicast(self.downstream_nodes, [barrier], is_audit_other=True)
-
+            # TODO: make more elegant
+            # if self.type != 'sink':
+                # self.multicast(self.downstream_nodes, [barrier], is_audit_other=True)
+            self.output_queue.put([barrier])
             # open all the channels after each checkpoint
             for n in self.upstream_nodes:
                 if n != barrier.sent_from:
                     self.input_queues[n]['is_blocked'] = False
-
-            return True
         else:
             # stop handling the tuples from this sender to wait for others
             self.input_queues[barrier.sent_from]['is_blocked'] = True
-
-            return False
 
     def consume_buffered_tuples(self):
         # round robin
@@ -283,6 +342,10 @@ class Bolt(Node):
                 self.handle_tuple(q['queue'].get())
                 q['queue'].task_done()
 
+    def handle_output_batch(self, output_batch):
+        if self.type != 'sink':
+            self.multicast(self.downstream_nodes, output_batch)
+    
     def serve_inbound_connection(self):
         while True:
             conn, client = self.sock.accept()
@@ -298,6 +361,7 @@ class Bolt(Node):
 
         thread.start_new_thread(self.serve_inbound_connection, ())
         thread.start_new_thread(self.consume_buffered_tuples, ())
+        thread.start_new_thread(self.consume_output_queue, ())
 
         while True:
             pass
@@ -320,26 +384,19 @@ class Connector(Bolt):
     def ack_version(self, version):
         # TODO: multiple upstream cuts should be valid too
         self.multicast(self.upstream_connectors, VersionAck(self.node_id, version), is_audit_other=True)
+        # self.output_queue.put((self.upstream_connectors, VersionAck(self.node_id, version)))
+        # self.LOGGER.info('acked version %d' % version)
 
-    def handle_normal_tuple(self, tuple_):
-        output = super(Connector, self).handle_normal_tuple(tuple_)
+    def handle_output_batch(self, output_batch):
+        tick = time.time()
+        self.pending_window.extend(output_batch)
+        tock = time.time()
+        self.time_auditor.pending_window_write += tock - tick
 
-        if self.type != 'sink' or self.rule == 'print and store':
-            tick = time.time()
-            self.pending_window.extend(output)
-            tock = time.time()
-            self.time_auditor.pending_window_write += tock - tick
+        if isinstance(output_batch[-1], BarrierTuple):
+            self.ack_version(output_batch[-1].version)
 
-    def handle_barrier(self, barrier):
-        is_version = super(Connector, self).handle_barrier(barrier)
-
-        if is_version:
-            tick = time.time()
-            self.pending_window.append(barrier)
-            tock = time.time()
-            self.time_auditor.pending_window_write += tock - tick
-
-            self.ack_version(barrier.version)
+        super(Connector, self).handle_output_batch(output_batch)
 
     def serve_inbound_connection(self):
         while True:
@@ -351,7 +408,7 @@ class Connector(Bolt):
             if isinstance(data, VersionAck):
                 # TODO: add buffer and threading
                 tick = time.time()
-                self.pending_window.handle_version_ack(data)
+                thread.start_new_thread(self.pending_window.handle_version_ack, (data,))
                 tock = time.time()
                 self.time_auditor.pending_window_handle_ack += tock - tick
             elif isinstance(data, list):
@@ -369,6 +426,7 @@ class Connector(Bolt):
 
         thread.start_new_thread(self.serve_inbound_connection, ())
         thread.start_new_thread(self.consume_buffered_tuples, ())
+        thread.start_new_thread(self.consume_output_queue, ())
 
         while True:
             pass

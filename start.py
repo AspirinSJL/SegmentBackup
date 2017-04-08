@@ -40,11 +40,15 @@ class AppStarter(object):
         self.pickle_dir = 'pickled_nodes'
         self.pickle_dir_local = os.path.join(CONSTANTS.ROOT_DIR, 'pickled_nodes')
 
+        # used for recovery
         self.backup_dir = 'backup'
+
+        # used for testing
+        self.computing_state_dir = 'computing_state'
 
         if start_mode == 'new':
             # create/overwrite these directories
-            for d in (self.pickle_dir, self.backup_dir):
+            for d in (self.pickle_dir, self.backup_dir, self.computing_state_dir):
                 self.hdfs_client.delete(d, recursive=True)
                 self.hdfs_client.makedirs(d)
 
@@ -77,11 +81,22 @@ class AppStarter(object):
             with self.hdfs_client.read(os.path.join(self.pickle_dir, '%d.pkl' % n)) as f:
                 nodes[n] = pickle.load(f)
 
+        # complete unfinished acks, also avoid slower node in new run to drag
+        for c_id, c_info in self.conf.iteritems():
+            if c_info['is_connecting'] and c_info['type'] != 'spout':
+                all_versions = self.hdfs_client.list(os.path.join(self.backup_dir, str(c_id), 'node'))
+                latest_version = max(int(f) for f in all_versions if f.isdigit() or [])
+
+                if latest_version > 0:
+                    for n in c_info['upstream_connectors']:
+                        nodes[n].pending_window.handle_version_ack(VersionAck(c_id, latest_version))
+
         # adjust state (should be BFS or DFS?)
         for c_id, c_info in self.conf.iteritems():
             if c_info['type'] == 'spout':
-                all_versions = self.hdfs_client.list(os.path.join(self.backup_dir, str(c_id), 'node'))
-                latest_version = max(map(int, all_versions))
+                # pending window is later than node
+                all_versions = self.hdfs_client.list(os.path.join(self.backup_dir, str(c_id), 'pending_window'))
+                latest_version = max(int(f) for f in all_versions if f.isdigit())
 
                 nodes[c_id].computing_state = latest_version
                 nodes[c_id].pending_window.rewind(latest_version)
