@@ -36,6 +36,9 @@ class Node(object):
         # update after handling (creating if Spout) each app tuple
         self.computing_state = computing_state
 
+        # for measuring the delay before processing new tuples
+        self.last_run_state = computing_state
+
         # update after handling each tuple
         self.tuple_handling_state = None
 
@@ -59,7 +62,7 @@ class Node(object):
 
         self.hdfs_client.write(os.path.join(self.computing_state_dir, '.'.join([str(self.node_id), str(0)])), data='')
 
-    def prepare(self):
+    def prepare(self, restart=False):
         """Operate before each running
             and some info should be reset before each run
             because some things can't be pickled, of course
@@ -67,20 +70,8 @@ class Node(object):
 
         logging.getLogger('hdfs.client').setLevel(logging.WARNING)
 
-        # for measuring the delay before processing new tuples
-        # self.last_run_state = max(map(int, self.hdfs_client.list(self.node_backup_dir)) or [0])
-        for f in self.hdfs_client.list(self.computing_state_dir):
-            if int(f.split('.')[0]) == self.node_id:
-                self.last_run_state = int(f.split('.')[1])
-
-                self.hdfs_client.rename(
-                    os.path.join(self.computing_state_dir, f),
-                    os.path.join(self.computing_state_dir, '.'.join([str(self.node_id), str(self.computing_state)])))
-
-                break
-
-        self.time_auditor = TimeAuditor(self)
-        self.space_auditor = SpaceAuditor(self)
+        self.time_auditor = TimeAuditor(self, restart)
+        self.space_auditor = SpaceAuditor(self, restart)
         thread.start_new_thread(self.time_auditor.run, ())
         thread.start_new_thread(self.space_auditor.run, ())
 
@@ -93,26 +84,30 @@ class Node(object):
         self.sock.bind(('localhost', CONSTANTS.PORT_BASE + self.node_id))
         self.sock.listen(2)
 
+        self.time_auditor.start = time.time()
+
         self.LOGGER.info('node %d started with computing state %d' % (self.node_id, self. computing_state))
 
-    def multicast(self, group, msg, is_audit_other=False):
+    def multicast(self, group, msg):
         if msg in (None, []):
             return
         # assume multicast infra
         # time.sleep(CONSTANTS.TRANSMIT_DELAY * getsizeof(msg) + CONSTANTS.PROPAGATE_DELAY)
-
-        # TODO
-        # if is_audit_other:
-        #     self.space_auditor.network_other += getsizeof(msg)
-        # else:
-        #     self.space_auditor.network_normal += getsizeof(msg)
         
-        # modify sent_from field
+        # modify sent_from field & audit
         if isinstance(msg, VersionAck):
             msg.sent_from = self.node_id
+
+            self.space_auditor.network_other += getsizeof(msg)
         else:
             for t in msg:
                 t.sent_from = self.node_id
+
+            if isinstance(msg[-1], BarrierTuple):
+                self.space_auditor.network_other += getsizeof(msg[-1])
+                self.space_auditor.network_normal += getsizeof(msg[:-1])
+            else:
+                self.space_auditor.network_normal+= getsizeof(msg)
 
         # send to each destination in group
         for n in group:
@@ -156,8 +151,7 @@ class Node(object):
 
     def checkpoint_version(self, version):
         # touch a file
-        # TODO: change overwrite to rewind. needn't overwrite after change
-        self.hdfs_client.write(os.path.join(self.node_backup_dir, str(version)), data='', overwrite=True)
+        self.hdfs_client.write(os.path.join(self.node_backup_dir, str(version)), data='')
         self.hdfs_client.write(self.node_latest_version_path, data=str(version), overwrite=True)
         self.latest_checked_version = version
 
@@ -197,23 +191,23 @@ class Spout(Node):
         self.pending_window = PendingWindow(self.pending_window_backup_dir, self)
 
     def gen_tuple(self):
-        self.time_auditor.start_new = time.time()
-
         # step from the last computing state
         i = self.computing_state + 1
-        while True:
-            inter_arrival_time = random.expovariate(CONSTANTS.QUEUE_LAMB)
-            time.sleep(inter_arrival_time)
 
-            if i % CONSTANTS.BARRIER_INTERVAL == 0:
+        while True:
+            if self.time_auditor.start_new == None and i > self.last_run_state:
+                self.time_auditor.start_new = time.time()
+
+            if i % CONSTANTS.BARRIER_INTERVAL:
+                inter_arrival_time = random.expovariate(CONSTANTS.QUEUE_LAMB)
+                time.sleep(inter_arrival_time)
+                output = [Tuple(i, self.node_id)]
+                self.update_computing_state(i)
+            else:
+                # inserting barriers does not change inter-arrival times for normal tuples
                 output = [BarrierTuple(i, self.node_id, i)]
                 self.checkpoint_version(i)
-            else:
-                output = [Tuple(i, self.node_id)]
 
-            self.update_computing_state(i)
-
-            # self.multicast(self.downstream_nodes, output, is_audit_other=(i % CONSTANTS.BARRIER_INTERVAL == 0))
             self.output_queue.put(output)
             self.tuple_handling_state = i
 
@@ -239,13 +233,18 @@ class Spout(Node):
         tock = time.time()
         self.time_auditor.pending_window_write += tock - tick
 
-        # TODO: audit class
         self.multicast(self.downstream_nodes, output_batch)
-        
-    def run(self, replay=False):
-        self.prepare()
 
-        if replay:
+    def get_latest_version(self):
+        latest_node_version = super(Spout, self).get_latest_version()
+        latest_pw_version = self.pending_window.get_latest_version()
+
+        return min(latest_node_version, latest_pw_version)
+
+    def run(self, restart=False):
+        self.prepare(restart)
+
+        if restart:
             self.pending_window.replay()
 
         thread.start_new_thread(self.serve_inbound_connection, ())
@@ -267,8 +266,8 @@ class Bolt(Node):
         self.upstream_nodes = upstream_nodes
         self.downstream_nodes = downstream_nodes
 
-    def prepare(self):
-        super(Bolt, self).prepare()
+    def prepare(self, restart=False):
+        super(Bolt, self).prepare(restart)
 
         # if a queue is blocked, it only buffer the incoming tuples but not handle them
         # i.e., blocked refers to the HEAD of the queue
@@ -299,11 +298,9 @@ class Bolt(Node):
     def handle_tuple(self, tuple_):
         """General method to handle any received tuple, including sending out if applicable
         """
+
         if self.time_auditor.start_new == None and tuple_.tuple_id > self.last_run_state:
             self.time_auditor.start_new = time.time()
-
-        service_time = random.expovariate(CONSTANTS.QUEUE_MU)
-        time.sleep(service_time)
 
         if isinstance(tuple_, BarrierTuple):
             tick = time.time()
@@ -312,6 +309,8 @@ class Bolt(Node):
             self.time_auditor.handle_barrier += tock - tick
         else:
             tick = time.time()
+            service_time = random.expovariate(CONSTANTS.QUEUE_MU)
+            time.sleep(service_time)
             self.handle_normal_tuple(tuple_)
             tock = time.time()
             self.time_auditor.handle_normal += tock - tick
@@ -326,13 +325,9 @@ class Bolt(Node):
             output = self.operator(tuple_)
             self.update_computing_state(tuple_.tuple_id)
 
-        # self.multicast(self.downstream_nodes, output)
         self.output_queue.put(output)
 
     def handle_barrier(self, barrier):
-        """Return whether a version is completed
-        """
-
         # if this is the last barrier needed for a version, checkpoint a version and relay the barrier to downstream
         if all(self.input_queues[n]['is_blocked'] for n in self.upstream_nodes if n != barrier.sent_from):
             self.checkpoint_version(barrier.version)
@@ -374,8 +369,8 @@ class Bolt(Node):
             for t in data:
                 self.input_queues[t.sent_from]['queue'].put(t, block=True)
 
-    def run(self):
-        self.prepare()
+    def run(self, restart=False):
+        self.prepare(restart)
 
         thread.start_new_thread(self.serve_inbound_connection, ())
         thread.start_new_thread(self.consume_buffered_tuples, ())
@@ -401,7 +396,7 @@ class Connector(Bolt):
 
     def ack_version(self, version):
         # TODO: multiple upstream cuts should be valid too
-        self.multicast(self.upstream_connectors, VersionAck(self.node_id, version), is_audit_other=True)
+        self.multicast(self.upstream_connectors, VersionAck(self.node_id, version))
         # self.output_queue.put((self.upstream_connectors, VersionAck(self.node_id, version)))
         # self.LOGGER.info('acked version %d' % version)
 
@@ -438,14 +433,16 @@ class Connector(Bolt):
             elif isinstance(data, list):
                 assert data and isinstance(data[0], Tuple)
                 for t in data:
-                    self.input_queues[t.sent_from]['queue'].put(t, block=True)
+                    # ignore the old tuples replayed
+                    if t.tuple_id > self.computing_state:
+                        self.input_queues[t.sent_from]['queue'].put(t, block=True)
             else:
                 self.LOGGER.warn('received unknown data type %s' % type(data))
 
-    def run(self, replay=False):
-        self.prepare()
+    def run(self, restart=False):
+        self.prepare(restart)
 
-        if replay:
+        if restart and self.type != 'sink':
             self.pending_window.replay()
 
         thread.start_new_thread(self.serve_inbound_connection, ())

@@ -6,3 +6,4 @@ __pycache__/
 # Directories
 backup/
 pickled_nodes/
+results/

@@ -13,7 +13,7 @@ TCP_BUFFER_SIZE = 4096
 # M/M/1 queue arrival rate
 QUEUE_LAMB = 30
 # M/M/1 queue service rate
-QUEUE_MU = 150
+QUEUE_MU = 80
 
 # inter-node communication delay, T * size + P
 TRANSMIT_DELAY = 0.00
@@ -28,6 +28,8 @@ FADING_FACTOR = 0.2
 # number interval between two consecutive barriers
 BARRIER_INTERVAL = 25
 # the interval between two consecutive time measurement
-TIME_AUDIT_INTERVAL = 30
+TIME_AUDIT_INTERVAL = 60
+TIME_AUDIT_INTERVAL_RESTART = 20
 # the interval between two consecutive space measurement
-SPACE_AUDIT_INTERVAL = 30
+SPACE_AUDIT_INTERVAL = 5
+SPACE_AUDIT_INTERVAL_RESTART = 10

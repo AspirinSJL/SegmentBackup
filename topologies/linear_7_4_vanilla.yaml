@@ -7,7 +7,6 @@
         - 3
     cover:
         - 2
-        - 3
 2:
     type: filter
     rule: 'lambda t: True'
@@ -30,7 +29,6 @@
         - 5
     cover:
         - 4
-        - 5
 4:
     type: filter
     rule: 'lambda t: True'
@@ -53,7 +51,6 @@
         - 7
     cover:
         - 6
-        - 7
 6:
     type: filter
     rule: 'lambda t: True'

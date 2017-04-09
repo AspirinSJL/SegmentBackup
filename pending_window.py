@@ -63,14 +63,12 @@ class PendingWindow(object):
     def truncate(self, version):
         """Delete files with filename <= version
         """
-        with self.hdfs_client.read(self.safe_version_path) as f:
-            safe_version = int(f.read())
-
-        # only = condition can occur
-        if version <= safe_version:
-            return
-
-        self.hdfs_client.write(self.safe_version_path, data=str(version), overwrite=True)
+        # with self.hdfs_client.read(self.safe_version_path) as f:
+        #     safe_version = int(f.read())
+        #
+        # # only = condition can occur
+        # if version <= safe_version:
+        #     return
 
         for f in self.hdfs_client.list(self.backup_dir):
             if f.isdigit() and int(f) <= version:
@@ -79,10 +77,13 @@ class PendingWindow(object):
         # self.node.LOGGER.info('truncated version %d' % version)
 
     def handle_version_ack(self, version_ack):
+        old_safe_version = min(self.version_acks.values())
         self.version_acks[version_ack.sent_from] = version_ack.version
+        new_safe_version = min(self.version_acks.values())
 
-        new_truncation = min(self.version_acks.values())
-        self.truncate(new_truncation)
+        if new_safe_version > old_safe_version:
+            self.hdfs_client.write(self.safe_version_path, data=str(new_safe_version), overwrite=True)
+            self.truncate(new_safe_version)
 
     def get_latest_version(self):
         with self.hdfs_client.read(self.latest_version_path) as f:
@@ -90,15 +91,23 @@ class PendingWindow(object):
         return latest_version
 
 
-    def rewind(self, version):
+    def rewind(self, version=None):
         """Delete files with filename > version (including current file)
         """
 
+        if version == None:
+            self.hdfs_client.write(self.current_backup_path, data='', overwrite=True)
+            return
+
+        # TODO: underflow
+        # assert version == 0 or
         for f in self.hdfs_client.list(self.backup_dir):
             if f.isdigit() and int(f) > version:
                 self.hdfs_client.delete(os.path.join(self.backup_dir, f))
 
         self.hdfs_client.write(self.current_backup_path, data='', overwrite=True)
+
+        self.hdfs_client.write(self.latest_version_path, data=str(version), overwrite=True)
 
     def replay(self):
         """When both the node and pending window state are ready, replay the pending window before resuming
@@ -106,8 +115,6 @@ class PendingWindow(object):
 
         for v in sorted(map(int, filter(unicode.isdigit, self.hdfs_client.list(self.backup_dir)))):
             # filter out the faster nodes
-            # TODO: only if this connector is spilitting
-            destination = [self.node.downstream_nodes[i] for i in xrange(len(self.node.downstream_connectors)) if self.version_acks[self.node.downstream_connectors[i]] < v]
             tuples = []
             with self.hdfs_client.read(os.path.join(self.backup_dir, str(v))) as f:
                 while True:
@@ -121,4 +128,4 @@ class PendingWindow(object):
                     # except pickle.UnpickleableError:
                     #     self.node.LOGGER.debug('spout reached partial dump location, send this incomplete version')
                     #     break
-                self.node.multicast(destination, tuples)
+                self.node.multicast(self.node.downstream_nodes, tuples)

@@ -52,16 +52,17 @@ class AppStarter(object):
                 self.hdfs_client.delete(d, recursive=True)
                 self.hdfs_client.makedirs(d)
 
+            time.sleep(2)
+
     def configure_nodes(self):
         """Turn the config into node instances, and pickle them for reuse
         """
 
         for n_id, n_info in self.conf.iteritems():
             if n_info['type'] == 'spout':
-
                 node = Spout(n_id, n_info['type'], n_info['downstream_nodes'], n_info['downstream_connectors'])
             else:
-                if n_info['type'] == 'sink' or n_info['is_connecting']:
+                if n_info['is_connecting']:
                     node = Connector(n_id, n_info['type'], n_info['rule'],
                                      n_info['upstream_nodes'], n_info['upstream_connectors'],
                                      n_info.get('downstream_nodes', None), n_info.get('downstream_connectors', None))
@@ -76,31 +77,59 @@ class AppStarter(object):
         """Adjust the backup data (both pending window and node state) to the latest consistent state,
             and update the pickled nodes to that state
         """
+
         nodes = {}
         for n in self.conf:
             with self.hdfs_client.read(os.path.join(self.pickle_dir, '%d.pkl' % n)) as f:
                 nodes[n] = pickle.load(f)
 
-        # adjust state (each connector is independent)
+        # complete unfinished acks, also avoid slower node in new run to drag
+        for c_id, c_info in self.conf.iteritems():
+            if c_info['is_connecting'] and c_info['type'] != 'spout':
+                latest_version = nodes[c_id].get_latest_version()
+
+                for n in c_info['upstream_connectors']:
+                    nodes[n].pending_window.handle_version_ack(VersionAck(c_id, latest_version))
+
+        # adjust state (should be BFS or DFS?)
+        # after this, it is like normal processing again
         for c_id, c_info in self.conf.iteritems():
             if c_info['is_connecting']:
                 latest_version = nodes[c_id].get_latest_version()
 
                 nodes[c_id].restore(latest_version)
-                LOGGER.info('node %d restored to version %d' % (c_id, latest_version))
                 nodes[c_id].pending_window.rewind(latest_version)
-                LOGGER.info('pwnd %d rewound to version %d' % (c_id, latest_version))
+                LOGGER.info('node %d restored (pwnd rewound) to latest version %d' % (c_id, latest_version))
 
-                # each connector is responsible for upper bolts' states
-                if c_info['type'] != 'spout':
+                # each connector should be responsible for make its downstream segment consistent
+                # if multiple connectors converge to a single downstream connector, they should have agreement naturally
+                # agreement should be achieved in lower level by some classical distributed algorithm
+                if c_info['type'] != 'sink':
+                    with self.hdfs_client.read(os.path.join(
+                            self.backup_dir, str(c_id), 'pending_window', 'safe_version')) as f:
+                        # the tuples before (inclusively) safe version have been handled by downstream connectors
+                        safe_version = int(f.read())
+
+                    # 1. adjust node state
                     for n in c_info['cover']:
-                        nodes[n].restore(latest_version)
-                        LOGGER.info('node %d restored to version %d' % (n, latest_version))
+                        nodes[n].restore(safe_version)
+                        LOGGER.info('node %d restored to version %d' % (n, safe_version))
 
-                    # ensure latest acks are received a
-                    # if latest_version > 0:
-                    for n in c_info['upstream_connectors']:
-                        nodes[n].pending_window.handle_version_ack(VersionAck(c_id, latest_version))
+                    # # 2. adjust pending window state
+                    # for n in c_info['downstream_connectors']:
+                    #     nodes[n].pending_window.rewind(safe_version)
+                    #     LOGGER.info('pwnd %d rewound to version %d' % (n, safe_version))
+
+
+        # for measuring the delay before processing new tuples
+        for f in self.hdfs_client.list(self.computing_state_dir):
+            n_id, n_state = map(int, (f.split('.')))
+            nodes[n_id].last_run_state = n_state
+
+            self.hdfs_client.rename(
+                os.path.join(self.computing_state_dir, f),
+                os.path.join(self.computing_state_dir,
+                             '.'.join([str(n_id), str(nodes[n_id].computing_state)])))
 
         for n in nodes:
             self.hdfs_client.write(
@@ -120,7 +149,7 @@ class AppStarter(object):
 
             Popen(['python', os.path.join(CONSTANTS.ROOT_DIR, 'start_node.py'),
                    '-f', os.path.join(CONSTANTS.ROOT_DIR, 'pickled_nodes', '%d.pkl' % n),
-                   '-r' if self.start_mode == 'restart' and self.conf[n]['is_connecting'] and self.conf[n]['type'] != 'sink' else ''])
+                   '-r' if self.start_mode == 'restart' else ''])
 
     def start_app(self):
         self.configure_nodes()

@@ -1,3 +1,3 @@
 #!/usr/bin/env bash
 
-python start.py -f topologies/linear_7_2_vanilla.yaml -m restart
+python /Users/juanli/PycharmProjects/SegmentBackup/start.py -f /Users/juanli/PycharmProjects/SegmentBackup/topologies/linear_7_4_vanilla.yaml -m restart

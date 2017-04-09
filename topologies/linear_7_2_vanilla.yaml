@@ -5,6 +5,12 @@
     is_connecting: True
     downstream_connectors:
         - 7
+    cover:
+        - 2
+        - 3
+        - 4
+        - 5
+        - 6
 2:
     type: filter
     rule: 'lambda t: True'
@@ -53,9 +59,3 @@
     is_connecting: True
     upstream_connectors:
         - 1
-    cover:
-        - 2
-        - 3
-        - 4
-        - 5
-        - 6
