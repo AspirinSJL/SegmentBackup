@@ -7,7 +7,6 @@
     is_connecting: True
     cover:
         - 2
-        - 3
 2:
     type: filter
     rule: 'lambda t: t.tuple_id % 2 == 0'
@@ -30,7 +29,6 @@
         - 5
     cover:
         - 4
-        - 5
 4:
     type: filter
     rule: 'lambda t: t.tuple_id % 8 == 0'

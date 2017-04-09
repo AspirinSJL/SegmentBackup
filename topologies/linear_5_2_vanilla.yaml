@@ -5,11 +5,12 @@
     downstream_nodes:
         - 2
     downstream_connectors:
-        - 3
+        - 5
     is_connecting: True
     cover:
         - 2
         - 3
+        - 4
 2:
     type: filter
     rule: 'lambda t: True'
@@ -41,4 +42,4 @@
         - 4
     is_connecting: True
     upstream_connectors:
-        - 3
+        - 1
